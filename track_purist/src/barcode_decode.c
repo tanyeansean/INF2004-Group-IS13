@@ -40,13 +40,13 @@ char barcode_pattern_to_char(uint16_t pattern9)
     }
 }
 
-uint8_t barcode_char_to_cmd(char c, barcode_cmd_t *cmd)
+uint8_t barcode_char_to_cmd(char c, uint8_t *cmd)
 {
     switch (c) {
-        case 'A': *cmd = BARCMD_LEFT;     return 1u;
-        case 'B': *cmd = BARCMD_RIGHT;    return 1u;
-        case 'C': *cmd = BARCMD_STRAIGHT; return 1u;
-        case 'D': *cmd = BARCMD_U_TURN;   return 1u;
+        case 'A': *cmd = (uint8_t)BARCMD_LEFT;     return 1u;
+        case 'B': *cmd = (uint8_t)BARCMD_RIGHT;    return 1u;
+        case 'C': *cmd = (uint8_t)BARCMD_STRAIGHT; return 1u;
+        case 'D': *cmd = (uint8_t)BARCMD_U_TURN;   return 1u;
         default:  return 0u;
     }
 }
@@ -112,7 +112,7 @@ static barcode_t decode_oriented(const uint32_t w[BARCODE_FRAME_ELEMENTS])
 {
     uint16_t p0, p1, p2;
     char c0, c1, c2;
-    barcode_cmd_t cmd;
+    uint8_t cmd;
 
     if (!barcode_classify_char(&w[0],  &p0)) {
         return barcode_invalid();
@@ -241,9 +241,9 @@ void barcode_eq_init(barcode_edge_queue_t *q)
 
 uint8_t barcode_eq_push(barcode_edge_queue_t *q, uint32_t t_us)
 {
-    uint32_t next = (q->head + 1u) % BARCODE_EDGE_QUEUE_LEN;
+    uint8_t next = (uint8_t)((q->head + 1u) % BARCODE_EDGE_QUEUE_LEN);
     if (next == q->tail) {
-        q->dropped++;        /* overflow: drop the edge, count it (G3) */
+        q->dropped++;        /* ISR is the sole writer; G3 counter */
         return 0u;
     }
     q->buf[q->head].t_us = t_us;
@@ -257,13 +257,23 @@ uint8_t barcode_eq_pop(barcode_edge_queue_t *q, barcode_edge_t *out)
         return 0u;           /* empty */
     }
     *out = q->buf[q->tail];
-    q->tail = (q->tail + 1u) % BARCODE_EDGE_QUEUE_LEN;
+    q->tail = (uint8_t)((q->tail + 1u) % BARCODE_EDGE_QUEUE_LEN);
     return 1u;
 }
 
 uint32_t barcode_eq_count(const barcode_edge_queue_t *q)
 {
-    return (q->head + BARCODE_EDGE_QUEUE_LEN - q->tail) % BARCODE_EDGE_QUEUE_LEN;
+    return (uint32_t)(((uint32_t)q->head + BARCODE_EDGE_QUEUE_LEN - q->tail)
+                      % BARCODE_EDGE_QUEUE_LEN);
+}
+
+uint8_t barcode_eq_overflow_delta(const barcode_edge_queue_t *q,
+                                  uint8_t *last_seen)
+{
+    uint8_t now = q->dropped;            /* single atomic read of ISR counter */
+    uint8_t delta = (uint8_t)(now - *last_seen); /* modular: handles wrap */
+    *last_seen = now;                    /* task writes ONLY its own copy */
+    return delta;
 }
 
 /* ------------------------------------------------------------------ */
@@ -276,9 +286,7 @@ uint32_t barcode_eq_count(const barcode_edge_queue_t *q)
 extern barcode_edge_queue_t g_barcode_eq;
 extern rtos_queue_t g_barcode_q;
 extern rtos_flag_t  g_hb_flag;
-extern rtos_flag_t  g_fault_flag;
 extern uint32_t     g_barcode_hb_bit;
-extern uint32_t     g_barcode_fault_ovf_bit; /* maps to FAULT_BARCODE_OVF slot */
 
 /* Board hook: current microsecond timestamp (e.g. time_us_32()). */
 extern uint32_t board_now_us(void);
@@ -291,26 +299,25 @@ void barcode_edge_isr(void)
 
 /*
  * Decode task: a thin loop around the pure assembler.
- *   - ISR stays timestamp-only; this task is the SOLE writer of barcode_q.
+ *   - ISR stays timestamp-only and is the SOLE writer of q->dropped;
+ *     this task is the SOLE writer of barcode_q.
  *   - barcode_asm_edge_arrived() decodes on the 30th edge.
  *   - barcode_asm_time_passed() abandons a stalled partial frame once.
- *   - Queue overflow forces INVALID and sets the fault flag (G3).
+ *   - Per G3, a queue overflow is handled as a COUNTER, not a fault bit:
+ *     if any edges were dropped since the previous frame, that frame is
+ *     marked INVALID and the drop is counted. The task detects this via
+ *     its own last-seen copy (barcode_eq_overflow_delta), never writing
+ *     q->dropped, so there is no two-writer race (Change Requirement 1).
  *   - The 20 ms poll keeps the heartbeat bit set even when idle.
  */
-static void publish_result(barcode_t result)
-{
-    if (g_barcode_eq.dropped != 0u) {
-        (void)rtos_flag_set(g_fault_flag, g_barcode_fault_ovf_bit);
-        result = barcode_invalid();
-        g_barcode_eq.dropped = 0u;
-    }
-    (void)rtos_queue_send(g_barcode_q, &result, sizeof(result));
-}
-
 void barcode_decode_task(void)
 {
     barcode_asm_t asm_state;
+    uint8_t       seen_dropped = 0u; /* task-private last-seen drop count */
     barcode_asm_init(&asm_state);
+
+    /* sync the baseline so pre-existing drops don't falsely taint frame 1 */
+    (void)barcode_eq_overflow_delta(&g_barcode_eq, &seen_dropped);
 
     for (;;) {
         barcode_edge_t e;
@@ -318,13 +325,17 @@ void barcode_decode_task(void)
 
         if (barcode_eq_pop(&g_barcode_eq, &e)) {
             if (barcode_asm_edge_arrived(&asm_state, e.t_us, &result)) {
-                publish_result(result);
+                if (barcode_eq_overflow_delta(&g_barcode_eq, &seen_dropped) != 0u) {
+                    result = barcode_invalid(); /* dropped edges -> untrusted */
+                }
+                (void)rtos_queue_send(g_barcode_q, &result, sizeof(result));
             }
         } else {
             (void)rtos_flag_set(g_hb_flag, g_barcode_hb_bit);
 
             if (barcode_asm_time_passed(&asm_state, board_now_us(), &result)) {
-                publish_result(result);
+                (void)barcode_eq_overflow_delta(&g_barcode_eq, &seen_dropped);
+                (void)rtos_queue_send(g_barcode_q, &result, sizeof(result));
             }
             rtos_delay_ms(BARCODE_FRAME_TIMEOUT_MS);
         }

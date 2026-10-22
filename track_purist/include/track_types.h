@@ -57,11 +57,17 @@ typedef struct {
 #define BARCODE_CMD_SHIFT     1u
 #define BARCODE_CMD_MASK     0x03u
 
-static inline barcode_t barcode_pack(uint8_t valid, barcode_cmd_t cmd)
+/*
+ * cmd is carried as uint8_t (0..3), not the enum type, so no 4-byte
+ * enum is used as a stored value, parameter, or return (Change
+ * Requirement 1, minimum bits). The BARCMD_* names remain the documented
+ * value set.
+ */
+static inline barcode_t barcode_pack(uint8_t valid, uint8_t cmd)
 {
     barcode_t b;
     b.packed = (uint8_t)((valid & BARCODE_VALID_MASK) |
-                         (((uint8_t)cmd & BARCODE_CMD_MASK) << BARCODE_CMD_SHIFT));
+                         ((cmd & BARCODE_CMD_MASK) << BARCODE_CMD_SHIFT));
     return b;
 }
 
@@ -70,9 +76,9 @@ static inline uint8_t barcode_is_valid(barcode_t b)
     return (uint8_t)(b.packed & BARCODE_VALID_MASK);
 }
 
-static inline barcode_cmd_t barcode_get_cmd(barcode_t b)
+static inline uint8_t barcode_get_cmd(barcode_t b)
 {
-    return (barcode_cmd_t)((b.packed >> BARCODE_CMD_SHIFT) & BARCODE_CMD_MASK);
+    return (uint8_t)((b.packed >> BARCODE_CMD_SHIFT) & BARCODE_CMD_MASK);
 }
 
 /* An INVALID result: valid = 0, cmd = 0. */
@@ -159,18 +165,29 @@ static inline uint8_t line_err_get_lost(line_err_t l)
 /* Fault bits (Buddy 3's contribution to the shared fault bitmask)     */
 /* ------------------------------------------------------------------ */
 /**
- * Buddy 3 owns these bits within the team's shared uint16_t fault mask
- * (owned/collected by Buddy 2). Set only your own bit, via a kernel
- * event flag (atomic) — never read-modify-write the mask directly.
+ * DEFERRED to Buddy 2's (Sean's) fault table per gap G1.
  *
- * The exact bit positions within the 16-bit team mask must be agreed
- * with Buddy 2; these offsets are Buddy-3-local placeholders.
+ * Version C requires ONE shared uint16_t fault mask with a table naming,
+ * for each bit: its owner, whether it latches, and how it clears. The
+ * mask already holds ~10 faults, so every extra bit costs the team. The
+ * bit positions, and even which faults Buddy 3 owns, are Sean's to
+ * assign — they must NOT be invented here.
+ *
+ * Accordingly this module defines no concrete fault-bit constants yet.
+ * When Sean publishes the table, add only the bit(s) he assigns to
+ * Buddy 3 as compile-time constants (not runtime externs), and set them
+ * via a kernel event flag (atomic; never read-modify-write the mask).
+ *
+ * Note on overflow: edge-queue overflow is NOT a fault bit. Per gap G3
+ * it is handled as a per-run COUNTER (drop the edge, count it, mark the
+ * barcode INVALID) — see barcode_eq_overflow_delta(). A previous
+ * FAULT_BARCODE_OVF bit was removed because it contradicted G3.
+ *
+ * Line-lost is reported in-band through line_err_q's lost-line flag, so
+ * it does not need a separate fault bit unless Sean's table adds one.
+ * "Running uncalibrated" is prevented structurally by the line task
+ * (it refuses to run until ir_cal_apply succeeds), not by a fault bit.
  */
-typedef enum {
-    FAULT_LINE_LOST   = (1u << 0), /* line lost beyond recovery window */
-    FAULT_BARCODE_OVF = (1u << 1), /* edge queue overflowed during a frame */
-    FAULT_IR_UNCAL    = (1u << 2)  /* line sensors used before calibration */
-} track_fault_t;
 
 #ifdef __cplusplus
 }

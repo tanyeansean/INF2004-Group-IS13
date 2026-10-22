@@ -149,17 +149,29 @@ uint8_t barcode_classify_char(const uint32_t elems[BARCODE_CHAR_ELEMENTS],
 char barcode_pattern_to_char(uint16_t pattern9);
 
 /**
- * Map a decoded command CHARACTER to a barcode_cmd_t.
+ * Map a decoded command CHARACTER to a command code (0..3).
  * Returns 1 and sets *cmd on success, 0 if the char is not a command.
  */
-uint8_t barcode_char_to_cmd(char c, barcode_cmd_t *cmd);
+uint8_t barcode_char_to_cmd(char c, uint8_t *cmd);
 
 /* ---- Edge queue (ISR producer / task consumer), ring buffer ---- */
+/*
+ * Change Requirement 1 (minimum bits + safe shared access):
+ *   - head/tail index a 32-entry ring, so they need only need to count
+ *     0..31: uint8_t is sufficient and is a single atomic access on the
+ *     RP2040 (one load/store, no read-modify-write tearing across the
+ *     ISR/task boundary).
+ *   - dropped is a per-run overflow COUNTER (G3: "drop the edge, count
+ *     it", NOT a fault bit). It is written ONLY by the ISR (push). The
+ *     consumer never writes it; instead it keeps its own last-seen copy
+ *     and reads the difference (see barcode_eq_overflow_delta). This
+ *     removes the two-writer lost-update race that CR1 forbids.
+ */
 typedef struct {
     barcode_edge_t buf[BARCODE_EDGE_QUEUE_LEN];
-    volatile uint32_t head;      /* ISR writes */
-    volatile uint32_t tail;      /* task reads */
-    volatile uint32_t dropped;   /* overflow count (G3) */
+    volatile uint8_t head;       /* ISR writes, task reads (0..31) */
+    volatile uint8_t tail;       /* task writes, ISR reads (0..31) */
+    volatile uint8_t dropped;    /* ISR is the SOLE writer; G3 counter  */
 } barcode_edge_queue_t;
 
 void     barcode_eq_init(barcode_edge_queue_t *q);
@@ -169,6 +181,15 @@ uint8_t  barcode_eq_push(barcode_edge_queue_t *q, uint32_t t_us);
 uint8_t  barcode_eq_pop(barcode_edge_queue_t *q, barcode_edge_t *out);
 /** Current number of queued edges. */
 uint32_t barcode_eq_count(const barcode_edge_queue_t *q);
+/**
+ * Consumer-side overflow check WITHOUT writing the queue. The task holds
+ * its own last-seen drop count in *last_seen; this returns how many new
+ * drops occurred since then and updates *last_seen. The ISR remains the
+ * only writer of q->dropped (no shared read-modify-write). uint8_t wrap
+ * is handled by modular subtraction.
+ */
+uint8_t  barcode_eq_overflow_delta(const barcode_edge_queue_t *q,
+                                   uint8_t *last_seen);
 
 #ifndef BARCODE_HOST_TEST
 #include "rtos_port.h"

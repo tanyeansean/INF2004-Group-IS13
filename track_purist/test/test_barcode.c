@@ -84,7 +84,7 @@ static void frame_to_edges(const uint32_t frame[BARCODE_FRAME_ELEMENTS],
 static void run_edges(barcode_asm_t *a,
                       const uint32_t *edges, uint32_t n,
                       int *valid_count, int *invalid_count,
-                      barcode_cmd_t *last_cmd)
+                      uint8_t *last_cmd)
 {
     uint32_t i;
     for (i = 0; i < n; i++) {
@@ -234,7 +234,7 @@ int main(void)
     {
         barcode_asm_t a; barcode_asm_init(&a);
         uint32_t f[BARCODE_FRAME_ELEMENTS], ed[BARCODE_FRAME_EDGES];
-        int v = 0, inv = 0; barcode_cmd_t cmd = BARCMD_LEFT;
+        int v = 0, inv = 0; uint8_t cmd = (uint8_t)BARCMD_LEFT;
         build_frame(T_STAR, T_A, T_STAR, f);
         frame_to_edges(f, 100000u, 5000u, ed);
         run_edges(&a, ed, BARCODE_FRAME_EDGES, &v, &inv, &cmd);
@@ -248,7 +248,7 @@ int main(void)
         barcode_asm_t a; barcode_asm_init(&a);
         uint32_t f[BARCODE_FRAME_ELEMENTS], rev[BARCODE_FRAME_ELEMENTS];
         uint32_t ed[BARCODE_FRAME_EDGES];
-        int v = 0, inv = 0; barcode_cmd_t cmd = BARCMD_LEFT;
+        int v = 0, inv = 0; uint8_t cmd = (uint8_t)BARCMD_LEFT;
         build_frame(T_STAR, T_B, T_STAR, f);
         reverse_frame(f, rev);
         frame_to_edges(rev, 100000u, 5000u, ed);
@@ -262,7 +262,7 @@ int main(void)
     {
         barcode_asm_t a; barcode_asm_init(&a);
         uint32_t f[BARCODE_FRAME_ELEMENTS], ed[BARCODE_FRAME_EDGES];
-        int v = 0, inv = 0; barcode_cmd_t cmd = BARCMD_LEFT;
+        int v = 0, inv = 0; uint8_t cmd = (uint8_t)BARCMD_LEFT;
         build_frame(T_STAR, T_C, T_STAR, f);
         frame_to_edges(f, 100000u, 5000u, ed);
         run_edges(&a, ed, BARCODE_FRAME_EDGES, &v, &inv, &cmd);
@@ -277,7 +277,7 @@ int main(void)
     {
         barcode_asm_t a; barcode_asm_init(&a);
         uint32_t f[BARCODE_FRAME_ELEMENTS], ed[BARCODE_FRAME_EDGES];
-        int v = 0, inv = 0; barcode_cmd_t cmd = BARCMD_LEFT;
+        int v = 0, inv = 0; uint8_t cmd = (uint8_t)BARCMD_LEFT;
         barcode_t out;
         uint8_t fired;
         build_frame(T_STAR, T_A, T_STAR, f);
@@ -316,26 +316,39 @@ int main(void)
     /* 6) queue overflow forces INVALID and sets the fault flag.
           The assembler doesn't own the queue, so this mirrors the task's
           publish_result() overflow rule directly. */
+    /* 6) queue overflow is a COUNTER that forces INVALID (G3), detected
+          without the consumer ever writing q->dropped (CR1: no race). */
     {
         barcode_edge_queue_t q;
         barcode_t result;
-        uint32_t fault_bits = 0u;
+        uint8_t seen = 0u;
         uint32_t i;
+        uint8_t delta;
+
         barcode_eq_init(&q);
         for (i = 0; i < BARCODE_EDGE_QUEUE_LEN + 5u; i++) {
             (void)barcode_eq_push(&q, i); /* force overflow */
         }
-        CHECK(q.dropped > 0, "overflow recorded dropped edges");
+        CHECK(q.dropped > 0, "overflow recorded dropped edges (ISR-side)");
 
-        /* emulate publish_result()'s overflow branch */
+        /* consumer detects drops via its own last-seen copy only */
+        delta = barcode_eq_overflow_delta(&q, &seen);
+        CHECK(delta > 0, "overflow_delta reports new drops");
+        CHECK_EQ_INT(seen, q.dropped, "last-seen updated to current count");
+
+        /* mirror the task's rule: drops since last frame -> INVALID */
         result = barcode_pack(1u, BARCMD_LEFT); /* pretend a decode happened */
-        if (q.dropped != 0u) {
-            fault_bits |= (uint32_t)FAULT_BARCODE_OVF;
+        if (delta != 0u) {
             result = barcode_invalid();
-            q.dropped = 0u;
         }
-        CHECK(!barcode_is_valid(result), "overflow forces INVALID");
-        CHECK(fault_bits & FAULT_BARCODE_OVF, "overflow sets fault flag");
+        CHECK(!barcode_is_valid(result), "overflow forces INVALID (counter, not fault bit)");
+
+        /* a second check with no new drops reports zero and leaves a VALID */
+        delta = barcode_eq_overflow_delta(&q, &seen);
+        CHECK_EQ_INT(delta, 0, "no new drops -> delta 0");
+
+        /* the consumer never wrote q->dropped (single-writer invariant) */
+        CHECK(q.dropped > 0, "q->dropped untouched by consumer");
     }
 
     /* 7) slow run (0.1 m/s, wide bar ~90 ms) does not trip quiet timeout.
@@ -344,7 +357,7 @@ int main(void)
     {
         barcode_asm_t a; barcode_asm_init(&a);
         uint32_t f[BARCODE_FRAME_ELEMENTS], ed[BARCODE_FRAME_EDGES];
-        int v = 0, inv = 0; barcode_cmd_t cmd = BARCMD_LEFT;
+        int v = 0, inv = 0; uint8_t cmd = (uint8_t)BARCMD_LEFT;
         uint32_t i;
         barcode_t out;
         build_frame(T_STAR, T_D, T_STAR, f);
