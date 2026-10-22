@@ -160,6 +160,58 @@ uint32_t barcode_edges_to_widths(const barcode_edge_t *edges, uint32_t n_edges,
 }
 
 /* ------------------------------------------------------------------ */
+/* Pure frame assembler                                                */
+/* ------------------------------------------------------------------ */
+void barcode_asm_init(barcode_asm_t *a)
+{
+    a->count = 0u;
+    a->last_edge_us = 0u;
+    a->have_edge = 0u;
+    a->quiet_timeout_us = (uint32_t)BARCODE_QUIET_TIMEOUT_MS * 1000u;
+}
+
+uint8_t barcode_asm_edge_arrived(barcode_asm_t *a, uint32_t t_us, barcode_t *out)
+{
+    barcode_edge_t edges[BARCODE_FRAME_EDGES];
+    uint32_t widths[BARCODE_FRAME_ELEMENTS];
+    uint32_t i;
+
+    a->edges[a->count] = t_us;
+    a->count++;
+    a->last_edge_us = t_us;
+    a->have_edge = 1u;
+
+    if (a->count < BARCODE_FRAME_EDGES) {
+        return 0u; /* frame not complete yet */
+    }
+
+    /* 30th edge: assemble and decode. */
+    for (i = 0u; i < BARCODE_FRAME_EDGES; i++) {
+        edges[i].t_us = a->edges[i];
+    }
+    (void)barcode_edges_to_widths(edges, BARCODE_FRAME_EDGES, widths);
+    *out = barcode_decode_frame(widths);
+
+    a->count = 0u;
+    a->have_edge = 0u;
+    return 1u;
+}
+
+uint8_t barcode_asm_time_passed(barcode_asm_t *a, uint32_t now_us, barcode_t *out)
+{
+    if (!a->have_edge || a->count == 0u) {
+        return 0u; /* nothing partial to abandon */
+    }
+    if ((now_us - a->last_edge_us) > a->quiet_timeout_us) {
+        *out = barcode_invalid(); /* abandon stalled partial frame, once */
+        a->count = 0u;
+        a->have_edge = 0u;
+        return 1u;
+    }
+    return 0u;
+}
+
+/* ------------------------------------------------------------------ */
 /* Edge queue (SPSC ring buffer)                                       */
 /* ------------------------------------------------------------------ */
 void barcode_eq_init(barcode_edge_queue_t *q)
@@ -220,21 +272,15 @@ void barcode_edge_isr(void)
 }
 
 /*
- * Decode task: gather edges into a frame.
- *   - A full barcode is exactly BARCODE_FRAME_EDGES (30) edges, so the
- *     frame is decoded the moment the 30th edge arrives.
- *   - If no edge arrives for BARCODE_QUIET_TIMEOUT_MS while a frame is
- *     partially assembled, the partial frame is abandoned and reported
- *     INVALID once (noise, or a partly-read barcode).
- *   - The task does NOT decode merely because the queue is momentarily
- *     empty: between two bars the queue is briefly empty, which is not a
- *     frame boundary.
- *   - The 20 ms poll keeps the heartbeat bit being set even when idle.
+ * Decode task: a thin loop around the pure assembler.
+ *   - ISR stays timestamp-only; this task is the SOLE writer of barcode_q.
+ *   - barcode_asm_edge_arrived() decodes on the 30th edge.
+ *   - barcode_asm_time_passed() abandons a stalled partial frame once.
+ *   - Queue overflow forces INVALID and sets the fault flag (G3).
+ *   - The 20 ms poll keeps the heartbeat bit set even when idle.
  */
 static void publish_result(barcode_t result)
 {
-    /* If the edge queue overflowed during capture, flag a fault and force
-       INVALID so a partial frame is never trusted (G3). */
     if (g_barcode_eq.dropped != 0u) {
         (void)rtos_flag_set(g_fault_flag, g_barcode_fault_ovf_bit);
         result = barcode_invalid();
@@ -245,33 +291,22 @@ static void publish_result(barcode_t result)
 
 void barcode_decode_task(void)
 {
-    barcode_edge_t edges[BARCODE_FRAME_EDGES];
-    uint32_t count = 0u;
-    uint32_t last_edge_us = 0u;
+    barcode_asm_t asm_state;
+    barcode_asm_init(&asm_state);
 
     for (;;) {
         barcode_edge_t e;
+        barcode_t      result;
 
         if (barcode_eq_pop(&g_barcode_eq, &e)) {
-            edges[count] = e;
-            count++;
-            last_edge_us = e.t_us;
-
-            if (count == BARCODE_FRAME_EDGES) {
-                uint32_t widths[BARCODE_FRAME_ELEMENTS];
-                (void)barcode_edges_to_widths(edges, count, widths);
-                publish_result(barcode_decode_frame(widths));
-                count = 0u;
+            if (barcode_asm_edge_arrived(&asm_state, e.t_us, &result)) {
+                publish_result(result);
             }
         } else {
             (void)rtos_flag_set(g_hb_flag, g_barcode_hb_bit);
 
-            /* Abandon a stalled partial frame after a true quiet gap. */
-            if ((count > 0u) &&
-                ((board_now_us() - last_edge_us) >
-                 (BARCODE_QUIET_TIMEOUT_MS * 1000u))) {
-                publish_result(barcode_invalid());
-                count = 0u;
+            if (barcode_asm_time_passed(&asm_state, board_now_us(), &result)) {
+                publish_result(result);
             }
             rtos_delay_ms(BARCODE_FRAME_TIMEOUT_MS);
         }

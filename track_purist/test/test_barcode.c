@@ -59,6 +59,43 @@ static void reverse_frame(const uint32_t in[BARCODE_FRAME_ELEMENTS],
     }
 }
 
+/*
+ * Convert a 29-element width frame into 30 edge timestamps starting at
+ * t0, with each element scaled by us_per_unit microseconds. NARROW(3)
+ * and WIDE(9) units map to proportional durations.
+ */
+static void frame_to_edges(const uint32_t frame[BARCODE_FRAME_ELEMENTS],
+                           uint32_t t0, uint32_t us_per_unit,
+                           uint32_t edges_out[BARCODE_FRAME_EDGES])
+{
+    uint32_t i, t = t0;
+    edges_out[0] = t;
+    for (i = 0; i < BARCODE_FRAME_ELEMENTS; i++) {
+        t += frame[i] * us_per_unit;
+        edges_out[i + 1] = t;
+    }
+}
+
+/*
+ * Drive a sequence of edge timestamps through the assembler, counting
+ * VALID and INVALID results produced by edge_arrived only (no time
+ * advance). Returns the last valid command seen.
+ */
+static void run_edges(barcode_asm_t *a,
+                      const uint32_t *edges, uint32_t n,
+                      int *valid_count, int *invalid_count,
+                      barcode_cmd_t *last_cmd)
+{
+    uint32_t i;
+    for (i = 0; i < n; i++) {
+        barcode_t out;
+        if (barcode_asm_edge_arrived(a, edges[i], &out)) {
+            if (barcode_is_valid(out)) { (*valid_count)++; *last_cmd = barcode_get_cmd(out); }
+            else                       { (*invalid_count)++; }
+        }
+    }
+}
+
 int main(void)
 {
     printf("== barcode decode tests ==\n");
@@ -183,6 +220,148 @@ int main(void)
         ok = barcode_eq_pop(&q, &e);
         CHECK(ok, "pop ok");
         CHECK_EQ_INT(e.t_us, 0, "first out = first in");
+    }
+
+    /* ============================================================= */
+    /* Pure frame-assembler tests (the task-loop logic, host-tested) */
+    /* ============================================================= */
+
+    /* 1) one *A* barcode => exactly 1 VALID, 0 INVALID */
+    {
+        barcode_asm_t a; barcode_asm_init(&a);
+        uint32_t f[BARCODE_FRAME_ELEMENTS], ed[BARCODE_FRAME_EDGES];
+        int v = 0, inv = 0; barcode_cmd_t cmd = BARCMD_LEFT;
+        build_frame(T_STAR, T_A, T_STAR, f);
+        frame_to_edges(f, 100000u, 5000u, ed);
+        run_edges(&a, ed, BARCODE_FRAME_EDGES, &v, &inv, &cmd);
+        CHECK_EQ_INT(v, 1, "one A barcode -> exactly 1 VALID");
+        CHECK_EQ_INT(inv, 0, "one A barcode -> 0 INVALID");
+        CHECK_EQ_INT(cmd, BARCMD_LEFT, "A -> LEFT via assembler");
+    }
+
+    /* 2) a reversed read => 1 VALID */
+    {
+        barcode_asm_t a; barcode_asm_init(&a);
+        uint32_t f[BARCODE_FRAME_ELEMENTS], rev[BARCODE_FRAME_ELEMENTS];
+        uint32_t ed[BARCODE_FRAME_EDGES];
+        int v = 0, inv = 0; barcode_cmd_t cmd = BARCMD_LEFT;
+        build_frame(T_STAR, T_B, T_STAR, f);
+        reverse_frame(f, rev);
+        frame_to_edges(rev, 100000u, 5000u, ed);
+        run_edges(&a, ed, BARCODE_FRAME_EDGES, &v, &inv, &cmd);
+        CHECK_EQ_INT(v, 1, "reversed read -> 1 VALID");
+        CHECK_EQ_INT(inv, 0, "reversed read -> 0 INVALID");
+        CHECK_EQ_INT(cmd, BARCMD_RIGHT, "reversed B -> RIGHT");
+    }
+
+    /* 3) two barcodes back to back => 2 VALID */
+    {
+        barcode_asm_t a; barcode_asm_init(&a);
+        uint32_t f[BARCODE_FRAME_ELEMENTS], ed[BARCODE_FRAME_EDGES];
+        int v = 0, inv = 0; barcode_cmd_t cmd = BARCMD_LEFT;
+        build_frame(T_STAR, T_C, T_STAR, f);
+        frame_to_edges(f, 100000u, 5000u, ed);
+        run_edges(&a, ed, BARCODE_FRAME_EDGES, &v, &inv, &cmd);
+        /* second barcode starts right after the first */
+        frame_to_edges(f, 500000u, 5000u, ed);
+        run_edges(&a, ed, BARCODE_FRAME_EDGES, &v, &inv, &cmd);
+        CHECK_EQ_INT(v, 2, "two barcodes -> 2 VALID");
+        CHECK_EQ_INT(inv, 0, "two barcodes -> 0 INVALID");
+    }
+
+    /* 4) partial frame then silence => exactly 1 INVALID */
+    {
+        barcode_asm_t a; barcode_asm_init(&a);
+        uint32_t f[BARCODE_FRAME_ELEMENTS], ed[BARCODE_FRAME_EDGES];
+        int v = 0, inv = 0; barcode_cmd_t cmd = BARCMD_LEFT;
+        barcode_t out;
+        uint8_t fired;
+        build_frame(T_STAR, T_A, T_STAR, f);
+        frame_to_edges(f, 100000u, 5000u, ed);
+        /* feed only the first 12 edges, then go quiet */
+        run_edges(&a, ed, 12u, &v, &inv, &cmd);
+        CHECK_EQ_INT(v, 0, "partial frame -> no VALID yet");
+        CHECK_EQ_INT(inv, 0, "partial frame -> no INVALID yet");
+
+        /* not enough silence yet (last edge at ed[11]) */
+        fired = barcode_asm_time_passed(&a, ed[11] + 100000u, &out); /* 100 ms */
+        CHECK(!fired, "100 ms silence < 150 ms: no abandon");
+
+        /* enough silence => exactly one INVALID */
+        fired = barcode_asm_time_passed(&a, ed[11] + 200000u, &out); /* 200 ms */
+        CHECK(fired, "200 ms silence > 150 ms: abandon fires");
+        CHECK(!barcode_is_valid(out), "abandoned partial -> INVALID");
+
+        /* a further time_passed must NOT fire again (reported once) */
+        fired = barcode_asm_time_passed(&a, ed[11] + 400000u, &out);
+        CHECK(!fired, "abandon reported only once");
+    }
+
+    /* 5) a stray noise edge => no VALID */
+    {
+        barcode_asm_t a; barcode_asm_init(&a);
+        barcode_t out;
+        uint8_t fired = barcode_asm_edge_arrived(&a, 100000u, &out);
+        CHECK(!fired, "single stray edge -> no result");
+        /* and it gets abandoned on silence, as INVALID not VALID */
+        fired = barcode_asm_time_passed(&a, 100000u + 200000u, &out);
+        CHECK(fired, "stray edge abandoned after silence");
+        CHECK(!barcode_is_valid(out), "stray edge -> never VALID");
+    }
+
+    /* 6) queue overflow forces INVALID and sets the fault flag.
+          The assembler doesn't own the queue, so this mirrors the task's
+          publish_result() overflow rule directly. */
+    {
+        barcode_edge_queue_t q;
+        barcode_t result;
+        uint32_t fault_bits = 0u;
+        uint32_t i;
+        barcode_eq_init(&q);
+        for (i = 0; i < BARCODE_EDGE_QUEUE_LEN + 5u; i++) {
+            (void)barcode_eq_push(&q, i); /* force overflow */
+        }
+        CHECK(q.dropped > 0, "overflow recorded dropped edges");
+
+        /* emulate publish_result()'s overflow branch */
+        result = barcode_pack(1u, BARCMD_LEFT); /* pretend a decode happened */
+        if (q.dropped != 0u) {
+            fault_bits |= (uint32_t)FAULT_BARCODE_OVF;
+            result = barcode_invalid();
+            q.dropped = 0u;
+        }
+        CHECK(!barcode_is_valid(result), "overflow forces INVALID");
+        CHECK(fault_bits & FAULT_BARCODE_OVF, "overflow sets fault flag");
+    }
+
+    /* 7) slow run (0.1 m/s, wide bar ~90 ms) does not trip quiet timeout.
+          us_per_unit chosen so a NARROW(3u)=30ms, WIDE(9u)=90ms. The
+          largest inter-edge gap is one WIDE element = 90 ms < 150 ms. */
+    {
+        barcode_asm_t a; barcode_asm_init(&a);
+        uint32_t f[BARCODE_FRAME_ELEMENTS], ed[BARCODE_FRAME_EDGES];
+        int v = 0, inv = 0; barcode_cmd_t cmd = BARCMD_LEFT;
+        uint32_t i;
+        barcode_t out;
+        build_frame(T_STAR, T_D, T_STAR, f);
+        frame_to_edges(f, 100000u, 10000u, ed); /* 1 unit = 10 ms => WIDE=90ms */
+
+        /* interleave a time_passed between each edge; none should abandon */
+        for (i = 0; i < BARCODE_FRAME_EDGES; i++) {
+            uint8_t fired;
+            if (barcode_asm_edge_arrived(&a, ed[i], &out)) {
+                if (barcode_is_valid(out)) { v++; cmd = barcode_get_cmd(out); }
+                else { inv++; }
+            }
+            if (i + 1 < BARCODE_FRAME_EDGES) {
+                /* time advances to just before the next edge */
+                fired = barcode_asm_time_passed(&a, ed[i + 1] - 1u, &out);
+                CHECK(!fired, "slow run: no premature abandon between bars");
+            }
+        }
+        CHECK_EQ_INT(v, 1, "slow run -> 1 VALID (no timeout trip)");
+        CHECK_EQ_INT(inv, 0, "slow run -> 0 INVALID");
+        CHECK_EQ_INT(cmd, BARCMD_U_TURN, "slow D -> U_TURN");
     }
 
     return TEST_SUMMARY();

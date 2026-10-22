@@ -90,6 +90,48 @@ barcode_t barcode_decode_frame(const uint32_t widths[BARCODE_FRAME_ELEMENTS]);
 uint32_t barcode_edges_to_widths(const barcode_edge_t *edges, uint32_t n_edges,
                                  uint32_t widths_out[BARCODE_FRAME_ELEMENTS]);
 
+/* ------------------------------------------------------------------ */
+/* Pure frame assembler (host-testable, no RTOS, no board hooks)       */
+/* ------------------------------------------------------------------ */
+/**
+ * State machine that turns a stream of edge timestamps into decoded
+ * results. It is driven by two calls, both taking the relevant
+ * timestamp as an argument so there is no hidden clock dependency:
+ *
+ *   barcode_asm_edge_arrived(a, t_us)  - an edge was captured at t_us
+ *   barcode_asm_time_passed(a, now_us) - no edge; current time is now_us
+ *
+ * Each call may produce at most one result (valid or invalid) via *out.
+ * The real task (barcode_decode_task) is a thin loop around these two
+ * calls plus the RTOS plumbing (queue pop, heartbeat, fault flag).
+ *
+ * The caller still owns overflow handling: on a detected queue overflow
+ * it should force INVALID. The assembler itself never touches the queue.
+ */
+typedef struct {
+    uint32_t edges[BARCODE_FRAME_EDGES];
+    uint32_t count;
+    uint32_t last_edge_us;
+    uint8_t  have_edge;        /* 1 once at least one edge is buffered */
+    uint32_t quiet_timeout_us; /* abandon partial frame after this silence */
+} barcode_asm_t;
+
+/** Initialise the assembler. quiet_timeout_us defaults applied if 0. */
+void barcode_asm_init(barcode_asm_t *a);
+
+/**
+ * Feed one captured edge. If this completes a full frame (30th edge),
+ * writes the decoded result to *out and returns 1; otherwise returns 0.
+ */
+uint8_t barcode_asm_edge_arrived(barcode_asm_t *a, uint32_t t_us, barcode_t *out);
+
+/**
+ * Advance time with no edge. If a partial frame has gone quiet longer
+ * than quiet_timeout_us, writes INVALID to *out, resets, and returns 1;
+ * otherwise returns 0.
+ */
+uint8_t barcode_asm_time_passed(barcode_asm_t *a, uint32_t now_us, barcode_t *out);
+
 /**
  * Classify the 9 elements of a single character into a 9-bit wide/narrow
  * pattern (MSB = first element). "Wide" = the 3 widest of the 9 elements.
