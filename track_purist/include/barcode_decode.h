@@ -4,7 +4,7 @@
  *
  * Pipeline:
  *   Right-IR edge ISR  -> timestamp only -> 32-entry edge queue
- *   Decode task        -> read edges (20 ms timeout) -> build 30-edge
+ *   Decode task        -> read edges -> build 30-edge
  *                         Code 39 frame -> decode -> barcode_q
  *
  * Code 39 frame model used here:
@@ -13,15 +13,16 @@
  *     separated by a narrow inter-character gap.
  *   - This decoder expects a 3-character frame:  *  <CMD>  *
  *     '*' is the Code 39 start/stop guard.
- *   - 3 chars x 9 elements + 2 inter-character gaps = 29 elements,
- *     plus the trailing gap after the stop '*' = 30 elements captured.
- *     Edges are converted to element widths; we work on 30 elements.
+ *   - 3 chars x 9 elements + 2 inter-character gaps = 29 elements.
+ *     That is 15 bars = 30 edges = 29 measured widths. There is NO
+ *     30th element: after the last bar the sensor sees plain paper, so
+ *     no further edge arrives.
  *   - valid bit is set only when BOTH guards decode as '*'.
  *   - The middle character is matched against a 4-entry command table.
  *   - If the forward frame fails, the REVERSED frame is tried (the car
  *     may read the barcode from either travel direction).
  *   - Anything else (bad guards, unknown middle char including 'Z', or a
- *     frame that is not 30 elements) => INVALID.
+ *     frame that is not 29 elements) => INVALID.
  *
  * The decode logic is pure and host-testable: see barcode_decode_frame().
  */
@@ -37,7 +38,8 @@ extern "C" {
 
 /* ---- Edge queue sizing (G3) ---- */
 #define BARCODE_EDGE_QUEUE_LEN   32u  /* a full frame is 30 edges */
-#define BARCODE_FRAME_ELEMENTS   30u  /* elements per decodable frame */
+#define BARCODE_FRAME_EDGES      30u  /* edges in one full barcode (15 bars x 2) */
+#define BARCODE_FRAME_ELEMENTS   29u  /* element widths per frame (edges - 1)    */
 #define BARCODE_CHAR_ELEMENTS     9u  /* Code 39: 9 elements per char */
 #define BARCODE_WIDE_PER_CHAR     3u  /* Code 39: 3 wide elements per char */
 
@@ -54,10 +56,10 @@ typedef struct {
 } barcode_edge_t;
 
 /**
- * Convert 30 element WIDTHS (durations, any consistent unit) into a
+ * Convert 29 element WIDTHS (durations, any consistent unit) into a
  * decoded barcode result. This is the pure host-testable core.
  *
- *   widths[0..29] : element durations in temporal order of capture.
+ *   widths[0..28] : element durations in temporal order of capture.
  *
  * Returns a packed barcode_t: valid + command, or barcode_invalid().
  * Tries the forward frame first, then the reversed frame.
@@ -66,10 +68,10 @@ barcode_t barcode_decode_frame(const uint32_t widths[BARCODE_FRAME_ELEMENTS]);
 
 /**
  * Convert an ordered list of edge timestamps into element widths.
- * With N edges you get N-1 intervals. For a valid frame we need
- * exactly BARCODE_FRAME_ELEMENTS widths, i.e. 31 edges, OR 30 widths
- * derived as the caller arranges. Returns the number of widths written
- * (capped at BARCODE_FRAME_ELEMENTS). Helper for the task layer/tests.
+ * With N edges you get N-1 intervals. A valid frame needs exactly
+ * BARCODE_FRAME_ELEMENTS (29) widths, i.e. BARCODE_FRAME_EDGES (30)
+ * edges. Returns the number of widths written (capped at
+ * BARCODE_FRAME_ELEMENTS). Helper for the task layer/tests.
  */
 uint32_t barcode_edges_to_widths(const barcode_edge_t *edges, uint32_t n_edges,
                                  uint32_t widths_out[BARCODE_FRAME_ELEMENTS]);

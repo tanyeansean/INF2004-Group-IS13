@@ -2,7 +2,7 @@
  * @file test_barcode.c
  * @brief Host unit tests for the barcode decode core and edge queue.
  *
- * Builds synthetic 30-element frames from Code 39 patterns and asserts
+ * Builds synthetic 29-element frames from Code 39 patterns and asserts
  * decode results. Narrow element = 3 units, wide element = 9 units
  * (the 3 mm / 9 mm bars from the spec), so the midpoint classifier has
  * a clear gap to work with.
@@ -36,8 +36,8 @@ static void emit_char(uint16_t pat, uint32_t *out)
 }
 
 /*
- * Build a 30-element frame: char0(9) gap(1) char1(9) gap(1) char2(9) + tail(1).
- * Gaps/tail are narrow inter-character spaces; their exact width is
+ * Build a 29-element frame: char0(9) gap(1) char1(9) gap(1) char2(9).
+ * Gaps are narrow inter-character spaces; their exact width is
  * ignored by the decoder (it reads offsets 0, 10, 20).
  */
 static void build_frame(uint16_t p0, uint16_t p1, uint16_t p2,

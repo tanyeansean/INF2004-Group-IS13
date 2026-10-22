@@ -98,10 +98,10 @@ uint8_t barcode_classify_char(const uint32_t elems[BARCODE_CHAR_ELEMENTS],
 /* Frame decode                                                        */
 /* ------------------------------------------------------------------ */
 /*
- * Frame layout (30 elements):
- *   char0 (9) | gap (1) | char1 (9) | gap (1) | char2 (9) = 29, + 1
- *   trailing element = 30. We decode char0, char1, char2 from fixed
- *   offsets 0, 10, 20 and ignore the inter-character gaps at 9, 19, 29.
+ * Frame layout (29 elements):
+ *   char0 (9) | gap (1) | char1 (9) | gap (1) | char2 (9) = 29.
+ *   We decode char0, char1, char2 from fixed offsets 0, 10, 20 and
+ *   ignore the inter-character gaps at 9 and 19.
  *   Valid iff char0 == '*' and char2 == '*' and char1 is a command.
  */
 static barcode_t decode_oriented(const uint32_t w[BARCODE_FRAME_ELEMENTS])
