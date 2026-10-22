@@ -39,7 +39,7 @@ typedef struct {
 /** Internal state carried between 5 ms steps (junction debounce timer). */
 typedef struct {
     uint32_t both_black_since_ms; /* timestamp both-black began, 0 = not both-black */
-    uint8_t  junction_latched;    /* edge-detect so junction reports once per entry */
+    uint8_t  junction_latched;    /* 1 once the junction has been confirmed (held >= N ms) */
 } line_follow_state_t;
 
 /** Raw analog sample pair for one step. */

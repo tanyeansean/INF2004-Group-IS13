@@ -57,7 +57,10 @@ line_err_t line_follow_step(const line_follow_cfg_t *cfg,
     int16_t error    = 0;
 
     if (left_black && center_black) {
-        /* Both black: candidate junction. Require it to hold N ms. */
+        /* Both black: candidate junction. Require it to hold N ms, then
+           hold the junction flag HIGH for as long as both stay black, so
+           Mission Control (polling at its own rate) cannot miss a brief
+           one-sample pulse. */
         if (state->both_black_since_ms == 0u) {
             /* use 1-based start so a genuine t=0 still registers */
             state->both_black_since_ms = sample->now_ms + 1u;
@@ -66,10 +69,8 @@ line_err_t line_follow_step(const line_follow_cfg_t *cfg,
             uint32_t began = state->both_black_since_ms - 1u;
             uint32_t held  = sample->now_ms - began;
             if (held >= cfg->junction_hold_ms) {
-                if (!state->junction_latched) {
-                    junction = 1u;               /* report once per entry */
-                    state->junction_latched = 1u;
-                }
+                junction = 1u;                 /* held high while both-black */
+                state->junction_latched = 1u;  /* confirmed at least once */
             }
         }
         error = 0; /* straddling a crossing: no meaningful edge error */

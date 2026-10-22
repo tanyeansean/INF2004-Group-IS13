@@ -91,6 +91,7 @@ int main(void)
     }
 
     /* --- step: junction only after both-black held >= N ms, once --- */
+    /* --- junction: fires after both-black held >= N ms, then HELD high --- */
     {
         line_follow_cfg_t c = make_cfg(); /* hold 30 ms */
         line_follow_state_t st; line_follow_reset(&st);
@@ -106,8 +107,24 @@ int main(void)
         s.now_ms = 35; r = line_follow_step(&c, &st, &s);
         CHECK(line_err_get_junction(r), "t=35ms: junction fires (>=30ms)");
 
+        /* held high on every subsequent step while both stay black */
         s.now_ms = 40; r = line_follow_step(&c, &st, &s);
-        CHECK(!line_err_get_junction(r), "junction latched: fires only once");
+        CHECK(line_err_get_junction(r), "t=40ms: junction still held high");
+
+        s.now_ms = 60; r = line_follow_step(&c, &st, &s);
+        CHECK(line_err_get_junction(r), "t=60ms: junction still held high");
+
+        /* leaving both-black drops the flag (edge following resumes) */
+        s.now_ms = 65; s.left_adc = 1000; s.center_adc = 2500;
+        r = line_follow_step(&c, &st, &s);
+        CHECK(!line_err_get_junction(r), "junction clears when both-black ends");
+
+        /* re-entering both-black must re-arm the hold timer (not instant) */
+        s.now_ms = 70; s.left_adc = 2500; s.center_adc = 2500;
+        r = line_follow_step(&c, &st, &s);
+        CHECK(!line_err_get_junction(r), "re-entry: hold timer restarts, no junction yet");
+        s.now_ms = 105; r = line_follow_step(&c, &st, &s);
+        CHECK(line_err_get_junction(r), "re-entry: junction fires again after hold");
     }
 
     /* --- calibration derives threshold midpoint + polarity --- */
