@@ -87,8 +87,9 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-Current status: 84 checks across 2 suites, all passing (57 barcode,
-27 line-follow + calibration).
+Current status: 142 checks across 2 suites, all passing (109 barcode,
+33 line-follow + calibration). The barcode task-loop logic is covered via
+a pure, host-testable frame assembler (barcode_asm_t).
 
 ## Open items (from the tribunal doc)
 
