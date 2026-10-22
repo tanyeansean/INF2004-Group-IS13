@@ -31,8 +31,9 @@ All inter-task / ISR-to-task data is bit-packed per Change Requirement 1.
   (`dark_is_high`). Closes assumption A2.
 - **Barcode**: Right-IR edge ISR is **timestamp-only** → 32-entry edge
   ring queue. Overflow drops the edge, counts it, and forces the frame
-  INVALID (G3). Decoder assembles a 30-element Code 39 frame
-  `* <cmd> *`, classifies each 9-element character (exactly 3 wide of 9),
+  INVALID (G3). Decoder assembles a 29-element Code 39 frame
+  (15 bars = 30 edges = 29 widths) `* <cmd> *`, classifies each
+  9-element character (exactly 3 wide of 9),
   validates both `*` guards, matches the middle char against a 4-entry
   command table, and retries the **reversed** frame for direction
   independence. Anything else (bad guards, unknown char incl. `Z`,
@@ -52,6 +53,43 @@ All inter-task / ISR-to-task data is bit-packed per Change Requirement 1.
 No STOP command (per spec). `Z` is a valid Code 39 char but not in the
 table, so it decodes as INVALID (tested).
 
+## Data representation (Change Requirement 1)
+
+Minimum-bit widths for Buddy 3 application data. Shared/packed fields use
+the fewest bits for their range; multi-field packed values have a single
+writer so there is no read-modify-write race.
+
+| Field | Range | Bits / type | Where | Notes |
+|-------|-------|-------------|-------|-------|
+| line error | −512..+511 | 10-bit signed in `uint16_t` | `line_err_q` | packed with the two flags below |
+| junction flag | 0/1 | 1 bit | `line_err_q` | held high while both-black |
+| lost-line flag | 0/1 | 1 bit | `line_err_q` | 13 bits used of the `uint16_t` |
+| barcode valid | 0/1 | 1 bit | `barcode_q` | packed in one `uint8_t` |
+| barcode command | 0..3 | 2 bits (`uint8_t`) | `barcode_q` | `barcode_cmd_t` values; carried as `uint8_t`, never a 4-byte enum |
+| edge ring head/tail | 0..31 | `uint8_t` | edge queue | single atomic access |
+| edge drop counter | per-run count | `uint8_t` | edge queue | **ISR is the sole writer**; consumer reads a delta vs its own last-seen copy (no race, CR1) |
+| edge timestamp | raw 32-bit timer | `uint32_t` | edge queue | **intentionally wide**: it is the raw hardware microsecond timer; only differences are used, via wrapping unsigned subtraction, so 32 bits is correct — not an over-wide application field |
+
+Overflow handling (G3): an edge-queue overflow is a **counter**, not a
+fault bit. On any drop since the previous frame, that frame is marked
+**INVALID**; no fault bit is raised.
+
+## Fault bits (deferred to Sean's table — G1)
+
+This module defines **no concrete fault-bit constants**. Per gap G1 the
+team uses one shared `uint16_t` fault mask with a table naming each bit's
+owner, latch and clear behaviour, owned by Buddy 2 (Sean). Bit positions
+and which faults Buddy 3 owns are his to assign and must not be invented
+here. When the table exists, add only Sean's assigned bit(s) as
+compile-time constants (not runtime externs) and set them via a kernel
+event flag (atomic).
+
+Removed earlier placeholders and why:
+- `FAULT_BARCODE_OVF` — contradicted G3 (overflow is a counter).
+- `FAULT_LINE_LOST` — line-lost is reported in-band via `line_err_q`.
+- `FAULT_IR_UNCAL` — replaced by a structural guard: the line task
+  refuses to follow until calibration succeeds.
+
 ## RTOS isolation (risk A7)
 
 The decode and line-follow **logic is RTOS-agnostic and host-testable**.
@@ -60,9 +98,11 @@ with documented TODOs (the SDK + uT-Kernel integration is unverified).
 If the team falls back to FreeRTOS or bare-metal, only the adapter
 changes — not the logic.
 
-The integration layer must provide the `extern` globals declared at the
-bottom of `line_follow.c` / `barcode_decode.c` (queue & flag ids, board
-ADC/time hooks).
+The line task **owns** its `line_follow_cfg_t` (no shared extern): it
+calibrates during READY and refuses to run uncalibrated. The integration
+layer provides the remaining `extern` globals / board hooks declared in
+`line_follow.c` and `barcode_decode.c` (queue & flag ids, ADC/time reads,
+and the READY-phase calibration hooks).
 
 ## Layout
 
