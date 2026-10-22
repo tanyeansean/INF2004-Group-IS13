@@ -104,31 +104,87 @@ line_err_t line_follow_step(const line_follow_cfg_t *cfg,
 /* ------------------------------------------------------------------ */
 #ifndef LINE_FOLLOW_HOST_TEST
 #include "rtos_port.h"
+#include "ir_calibrate.h"
 
-/* These are provided by the integration layer (board pins, queue/flag ids). */
+/* These are provided by the integration layer (queue/flag ids). */
 extern rtos_queue_t g_line_err_q;
 extern rtos_flag_t  g_hb_flag;
 extern uint32_t     g_line_follow_hb_bit;
-extern line_follow_cfg_t g_line_cfg;    /* filled by ir_calibrate in READY */
 
 /* Hardware hooks implemented in the board layer (ADC reads). */
 extern uint16_t board_read_left_adc(void);
 extern uint16_t board_read_center_adc(void);
 
+/*
+ * READY-phase calibration hooks (board layer). The line task OWNS the
+ * config and the calibration; nothing else writes it. During READY the
+ * operator presents the line and the background in turn.
+ *   board_line_ready()         -> 1 while still in the READY phase
+ *   board_line_sample_is_line()-> 1 if the current view is the black line,
+ *                                 0 if it is background (operator-signalled,
+ *                                 e.g. via the start button or a fixed
+ *                                 move-over-line-then-off sequence)
+ */
+extern uint8_t board_line_ready(void);
+extern uint8_t board_line_sample_is_line(void);
+
 void line_follow_task(void)
 {
+    /* cfg is OWNED by this task (no shared extern) -> single writer, and
+       no other task can read a half-updated multi-field struct. */
+    line_follow_cfg_t   cfg;
     line_follow_state_t state;
+    ir_cal_accum_t      cal_left, cal_center;
+    uint8_t             calibrated = 0u;
+
+    /* Fixed tuning that is not derived from sensor data. */
+    cfg.junction_hold_ms = 30u;
+    cfg.error_gain       = 1;
+
+    /* ---- READY: collect calibration samples, then compute thresholds ---- */
+    ir_cal_reset(&cal_left);
+    ir_cal_reset(&cal_center);
+    while (board_line_ready()) {
+        uint16_t l = board_read_left_adc();
+        uint16_t c = board_read_center_adc();
+        if (board_line_sample_is_line()) {
+            ir_cal_add_line(&cal_left, l);
+            ir_cal_add_line(&cal_center, c);
+        } else {
+            ir_cal_add_background(&cal_left, l);
+            ir_cal_add_background(&cal_center, c);
+        }
+        (void)rtos_flag_set(g_hb_flag, g_line_follow_hb_bit); /* stay alive */
+        rtos_delay_ms(LINE_FOLLOW_PERIOD_MS);
+    }
+    calibrated = ir_cal_apply(&cal_left, &cal_center, &cfg);
+
     line_follow_reset(&state);
 
+    /* ---- RUN ---- */
     for (;;) {
         line_sample_t s;
         line_err_t    msg;
+
+        /*
+         * Refuse to follow the line uncalibrated. Report lost-line (error
+         * 0) so Mission Control holds rather than steering on garbage.
+         * This replaces the intent of the removed FAULT_IR_UNCAL bit with
+         * a structural guard (preferred over an invented fault bit).
+         */
+        if (!calibrated) {
+            msg = line_err_pack(0, 0u, 1u); /* lost-line, no error */
+            (void)rtos_queue_send(g_line_err_q, &msg, sizeof(msg));
+            (void)rtos_flag_set(g_hb_flag, g_line_follow_hb_bit);
+            rtos_delay_ms(LINE_FOLLOW_PERIOD_MS);
+            continue;
+        }
 
         s.left_adc   = board_read_left_adc();
         s.center_adc = board_read_center_adc();
         s.now_ms     = rtos_now_ms();
 
-        msg = line_follow_step(&g_line_cfg, &state, &s);
+        msg = line_follow_step(&cfg, &state, &s);
 
         /* zero-timeout send; if full, Mission Control just missed one sample */
         (void)rtos_queue_send(g_line_err_q, &msg, sizeof(msg));
