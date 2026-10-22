@@ -1,0 +1,9 @@
+# Host unit-test build output
+test/build/
+build/
+
+# Editor / OS
+.vscode/
+*.exe
+*.obj
+*.o
