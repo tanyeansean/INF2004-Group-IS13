@@ -43,8 +43,22 @@ extern "C" {
 #define BARCODE_CHAR_ELEMENTS     9u  /* Code 39: 9 elements per char */
 #define BARCODE_WIDE_PER_CHAR     3u  /* Code 39: 3 wide elements per char */
 
-/* ---- Decode-task frame-assembly timeout ---- */
-#define BARCODE_FRAME_TIMEOUT_MS 20u  /* keeps heartbeat alive while waiting */
+/* ---- Decode-task timing ---- */
+#define BARCODE_FRAME_TIMEOUT_MS 20u  /* poll period; keeps heartbeat alive */
+
+/*
+ * Quiet timeout: if no new edge arrives for this long while a frame is
+ * partially assembled, the partial frame is abandoned and reported
+ * INVALID once. It must exceed the longest gap between two edges of a
+ * valid barcode at the slowest supported run speed.
+ *
+ * Slowest supported speed ~0.1 m/s. A wide bar is ~9 mm, so the longest
+ * single element lasts ~9 mm / 100 mm/s = ~90 ms. 150 ms leaves margin
+ * above that worst-case element while still abandoning a truly stalled
+ * read quickly. Re-tune against measured traversal time on the real
+ * track (open item A2).
+ */
+#define BARCODE_QUIET_TIMEOUT_MS 150u
 
 /**
  * One captured edge: a timestamp only. The ISR pushes these; it performs

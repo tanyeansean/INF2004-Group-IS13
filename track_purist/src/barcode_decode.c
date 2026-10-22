@@ -220,52 +220,59 @@ void barcode_edge_isr(void)
 }
 
 /*
- * Decode task: gather edges into a frame. A frame is considered complete
- * when a quiet gap (no new edge within BARCODE_FRAME_TIMEOUT_MS) follows
- * at least 2 edges. The 20 ms wait also lets the task set its heartbeat
- * bit regularly even when no barcode is present.
+ * Decode task: gather edges into a frame.
+ *   - A full barcode is exactly BARCODE_FRAME_EDGES (30) edges, so the
+ *     frame is decoded the moment the 30th edge arrives.
+ *   - If no edge arrives for BARCODE_QUIET_TIMEOUT_MS while a frame is
+ *     partially assembled, the partial frame is abandoned and reported
+ *     INVALID once (noise, or a partly-read barcode).
+ *   - The task does NOT decode merely because the queue is momentarily
+ *     empty: between two bars the queue is briefly empty, which is not a
+ *     frame boundary.
+ *   - The 20 ms poll keeps the heartbeat bit being set even when idle.
  */
+static void publish_result(barcode_t result)
+{
+    /* If the edge queue overflowed during capture, flag a fault and force
+       INVALID so a partial frame is never trusted (G3). */
+    if (g_barcode_eq.dropped != 0u) {
+        (void)rtos_flag_set(g_fault_flag, g_barcode_fault_ovf_bit);
+        result = barcode_invalid();
+        g_barcode_eq.dropped = 0u;
+    }
+    (void)rtos_queue_send(g_barcode_q, &result, sizeof(result));
+}
+
 void barcode_decode_task(void)
 {
-    barcode_edge_t edges[BARCODE_EDGE_QUEUE_LEN];
+    barcode_edge_t edges[BARCODE_FRAME_EDGES];
     uint32_t count = 0u;
+    uint32_t last_edge_us = 0u;
 
     for (;;) {
         barcode_edge_t e;
-        uint8_t got = barcode_eq_pop(&g_barcode_eq, &e);
 
-        if (got) {
-            if (count < BARCODE_EDGE_QUEUE_LEN) {
-                edges[count++] = e;
-            }
-        } else {
-            /* No edge right now: pace at the frame timeout + heartbeat. */
-            (void)rtos_flag_set(g_hb_flag, g_barcode_hb_bit);
+        if (barcode_eq_pop(&g_barcode_eq, &e)) {
+            edges[count] = e;
+            count++;
+            last_edge_us = e.t_us;
 
-            if (count >= 2u) {
-                /* Quiet period after some edges => frame boundary. */
+            if (count == BARCODE_FRAME_EDGES) {
                 uint32_t widths[BARCODE_FRAME_ELEMENTS];
-                uint32_t n = barcode_edges_to_widths(edges, count, widths);
-                barcode_t result;
-
-                if (n == BARCODE_FRAME_ELEMENTS) {
-                    result = barcode_decode_frame(widths);
-                } else {
-                    result = barcode_invalid();
-                }
-
-                /* If the edge queue overflowed during capture, flag fault
-                   and force INVALID so a partial frame is never trusted. */
-                if (g_barcode_eq.dropped != 0u) {
-                    (void)rtos_flag_set(g_fault_flag, g_barcode_fault_ovf_bit);
-                    result = barcode_invalid();
-                    g_barcode_eq.dropped = 0u;
-                }
-
-                (void)rtos_queue_send(g_barcode_q, &result, sizeof(result));
+                (void)barcode_edges_to_widths(edges, count, widths);
+                publish_result(barcode_decode_frame(widths));
                 count = 0u;
             }
+        } else {
+            (void)rtos_flag_set(g_hb_flag, g_barcode_hb_bit);
 
+            /* Abandon a stalled partial frame after a true quiet gap. */
+            if ((count > 0u) &&
+                ((board_now_us() - last_edge_us) >
+                 (BARCODE_QUIET_TIMEOUT_MS * 1000u))) {
+                publish_result(barcode_invalid());
+                count = 0u;
+            }
             rtos_delay_ms(BARCODE_FRAME_TIMEOUT_MS);
         }
     }
