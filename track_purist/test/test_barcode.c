@@ -23,7 +23,7 @@
 #define T_B    0x049u
 #define T_C    0x148u
 #define T_D    0x019u
-#define T_Z    0x0A2u
+#define T_Z    0x0D0u  /* real Code 39 'Z' = nWWnWnnnn (not a command) */
 
 /* Expand a 9-bit pattern (MSB first) into 9 element widths. */
 static void emit_char(uint16_t pat, uint32_t *out)

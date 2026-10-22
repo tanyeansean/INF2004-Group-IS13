@@ -25,7 +25,7 @@
 #define PAT_C     0x148u /* 1 0100 1000 */
 #define PAT_D     0x019u /* 0 0001 1001 */
 /* 'Z' is intentionally NOT a command -> must decode as INVALID. */
-#define PAT_Z     0x0A2u /* 0 0101 0010 */
+#define PAT_Z     0x0D0u /* 0 1101 0000  (nWWnWnnnn, real Code 39 'Z') */
 
 char barcode_pattern_to_char(uint16_t pattern9)
 {
