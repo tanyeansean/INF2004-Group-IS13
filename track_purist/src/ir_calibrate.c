@@ -54,8 +54,12 @@ uint8_t ir_cal_apply(const ir_cal_accum_t *left,
                      line_follow_cfg_t *cfg)
 {
     uint16_t lt, ct;
-    if (!ir_cal_compute(left, &lt))   return 0u;
-    if (!ir_cal_compute(center, &ct)) return 0u;
+    if (!ir_cal_compute(left, &lt)) {
+        return 0u;
+    }
+    if (!ir_cal_compute(center, &ct)) {
+        return 0u;
+    }
 
     cfg->left_threshold   = lt;
     cfg->center_threshold = ct;

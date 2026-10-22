@@ -78,7 +78,9 @@ static inline barcode_cmd_t barcode_get_cmd(barcode_t b)
 /* An INVALID result: valid = 0, cmd = 0. */
 static inline barcode_t barcode_invalid(void)
 {
-    barcode_t b; b.packed = 0u; return b;
+    barcode_t b;
+    b.packed = 0u;
+    return b;
 }
 
 /* ------------------------------------------------------------------ */
@@ -118,8 +120,12 @@ static inline line_err_t line_err_pack(int16_t error,
     line_err_t l;
     uint16_t e;
 
-    if (error < LINE_ERR_MIN) error = (int16_t)LINE_ERR_MIN;
-    if (error > LINE_ERR_MAX) error = (int16_t)LINE_ERR_MAX;
+    if (error < LINE_ERR_MIN) {
+        error = (int16_t)LINE_ERR_MIN;
+    }
+    if (error > LINE_ERR_MAX) {
+        error = (int16_t)LINE_ERR_MAX;
+    }
 
     e = (uint16_t)((uint16_t)error & LINE_ERR_MASK); /* two's complement low 10 bits */
 

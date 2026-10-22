@@ -90,8 +90,12 @@ static void run_edges(barcode_asm_t *a,
     for (i = 0; i < n; i++) {
         barcode_t out;
         if (barcode_asm_edge_arrived(a, edges[i], &out)) {
-            if (barcode_is_valid(out)) { (*valid_count)++; *last_cmd = barcode_get_cmd(out); }
-            else                       { (*invalid_count)++; }
+            if (barcode_is_valid(out)) {
+                (*valid_count)++;
+                *last_cmd = barcode_get_cmd(out);
+            } else {
+                (*invalid_count)++;
+            }
         }
     }
 }
@@ -350,8 +354,12 @@ int main(void)
         for (i = 0; i < BARCODE_FRAME_EDGES; i++) {
             uint8_t fired;
             if (barcode_asm_edge_arrived(&a, ed[i], &out)) {
-                if (barcode_is_valid(out)) { v++; cmd = barcode_get_cmd(out); }
-                else { inv++; }
+                if (barcode_is_valid(out)) {
+                    v++;
+                    cmd = barcode_get_cmd(out);
+                } else {
+                    inv++;
+                }
             }
             if (i + 1 < BARCODE_FRAME_EDGES) {
                 /* time advances to just before the next edge */

@@ -40,8 +40,12 @@ void line_follow_reset(line_follow_state_t *state)
 
 static int16_t clamp_err(int32_t v)
 {
-    if (v < LINE_ERR_MIN) return (int16_t)LINE_ERR_MIN;
-    if (v > LINE_ERR_MAX) return (int16_t)LINE_ERR_MAX;
+    if (v < LINE_ERR_MIN) {
+        return (int16_t)LINE_ERR_MIN;
+    }
+    if (v > LINE_ERR_MAX) {
+        return (int16_t)LINE_ERR_MAX;
+    }
     return (int16_t)v;
 }
 

@@ -70,8 +70,12 @@ uint8_t barcode_classify_char(const uint32_t elems[BARCODE_CHAR_ELEMENTS],
     uint8_t i;
 
     for (i = 1u; i < BARCODE_CHAR_ELEMENTS; i++) {
-        if (elems[i] < mn) mn = elems[i];
-        if (elems[i] > mx) mx = elems[i];
+        if (elems[i] < mn) {
+            mn = elems[i];
+        }
+        if (elems[i] > mx) {
+            mx = elems[i];
+        }
     }
     if (mx == mn) {
         return 0u; /* all equal: cannot distinguish wide/narrow */
@@ -110,16 +114,26 @@ static barcode_t decode_oriented(const uint32_t w[BARCODE_FRAME_ELEMENTS])
     char c0, c1, c2;
     barcode_cmd_t cmd;
 
-    if (!barcode_classify_char(&w[0],  &p0)) return barcode_invalid();
-    if (!barcode_classify_char(&w[10], &p1)) return barcode_invalid();
-    if (!barcode_classify_char(&w[20], &p2)) return barcode_invalid();
+    if (!barcode_classify_char(&w[0],  &p0)) {
+        return barcode_invalid();
+    }
+    if (!barcode_classify_char(&w[10], &p1)) {
+        return barcode_invalid();
+    }
+    if (!barcode_classify_char(&w[20], &p2)) {
+        return barcode_invalid();
+    }
 
     c0 = barcode_pattern_to_char(p0);
     c1 = barcode_pattern_to_char(p1);
     c2 = barcode_pattern_to_char(p2);
 
-    if (c0 != '*' || c2 != '*') return barcode_invalid();
-    if (!barcode_char_to_cmd(c1, &cmd)) return barcode_invalid();
+    if (c0 != '*' || c2 != '*') {
+        return barcode_invalid();
+    }
+    if (!barcode_char_to_cmd(c1, &cmd)) {
+        return barcode_invalid();
+    }
 
     return barcode_pack(1u, cmd);
 }
@@ -150,9 +164,13 @@ uint32_t barcode_edges_to_widths(const barcode_edge_t *edges, uint32_t n_edges,
                                  uint32_t widths_out[BARCODE_FRAME_ELEMENTS])
 {
     uint32_t i, n;
-    if (n_edges < 2u) return 0u;
+    if (n_edges < 2u) {
+        return 0u;
+    }
     n = n_edges - 1u;
-    if (n > BARCODE_FRAME_ELEMENTS) n = BARCODE_FRAME_ELEMENTS;
+    if (n > BARCODE_FRAME_ELEMENTS) {
+        n = BARCODE_FRAME_ELEMENTS;
+    }
     for (i = 0u; i < n; i++) {
         widths_out[i] = edges[i + 1u].t_us - edges[i].t_us;
     }
