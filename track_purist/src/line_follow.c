@@ -12,12 +12,13 @@
 /*
  * Sign convention for error:
  *   error = (left_adc - center_adc) scaled by error_gain, after removing
- *   the sensor polarity via dark_is_high.
+ *   the sensor polarity via dark_is_high (so "more black" always pushes
+ *   the raw difference positive before scaling).
  *
  * We follow the LEFT edge of the line with Left + Center sensors:
- *   - Centered on the edge  -> both sensors see a similar mix -> error ~ 0.
- *   - Line drifts so Center sees more black than Left -> error > 0.
- *   - Line drifts the other way -> error < 0.
+ *   - Centered on the edge -> both sensors see a similar mix -> error ~ 0.
+ *   - LEFT sees more black than Center -> error > 0.
+ *   - CENTER sees more black than Left -> error < 0.
  * Mission Control interprets the sign; what matters here is that 0 is
  * centered and the magnitude grows with deviation.
  */

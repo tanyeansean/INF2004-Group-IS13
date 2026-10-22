@@ -80,6 +80,29 @@ int main(void)
         CHECK(line_err_get_error(r) != 0, "edge following gives nonzero error");
     }
 
+    /* --- step: sign convention (matches the corrected comment) --- */
+    {
+        line_follow_cfg_t c = make_cfg(); /* dark_is_high = 1 */
+        line_follow_state_t st;
+        line_err_t r;
+
+        /* Left sees more black (higher adc) than Center => error > 0 */
+        line_follow_reset(&st);
+        {
+            line_sample_t s = { .left_adc = 2500, .center_adc = 1000, .now_ms = 0 };
+            r = line_follow_step(&c, &st, &s);
+        }
+        CHECK(line_err_get_error(r) > 0, "Left more black => error > 0");
+
+        /* Center sees more black than Left => error < 0 */
+        line_follow_reset(&st);
+        {
+            line_sample_t s = { .left_adc = 1000, .center_adc = 2500, .now_ms = 0 };
+            r = line_follow_step(&c, &st, &s);
+        }
+        CHECK(line_err_get_error(r) < 0, "Center more black => error < 0");
+    }
+
     /* --- step: both background => lost line --- */
     {
         line_follow_cfg_t c = make_cfg();
