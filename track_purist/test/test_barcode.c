@@ -17,13 +17,34 @@
 #define NARROW 3u
 #define WIDE   9u
 
-/* Pattern constants mirrored from barcode_decode.c for test construction. */
+/* Pattern constants for test construction. Letters come from the
+   decoder's own table (barcode_letter_pattern) and are independently
+   checked below against the course samples and Code 39 rules. */
 #define T_STAR 0x094u
-#define T_A    0x109u
+#define T_A    0x109u   /* course sample A */
 #define T_B    0x049u
 #define T_C    0x148u
 #define T_D    0x019u
-#define T_Z    0x0D0u  /* real Code 39 'Z' = nWWnWnnnn (not a command) */
+#define T_F    0x058u   /* course sample F */
+#define T_W    0x1C0u   /* course sample W */
+#define T_X    0x091u   /* course sample X */
+#define T_Y    0x190u   /* course sample Y */
+#define T_Z    0x0D0u   /* course sample Z */
+#define T_P    0x052u   /* '*' read backwards */
+#define T_DIGIT0 0x034u /* Code 39 '0' (not a letter -> INVALID) */
+
+#define L(ch)  ((uint8_t)((ch) - 'A'))
+
+/* Reverse the 9 element order of a pattern (what a backwards scan sees). */
+static uint16_t reverse9(uint16_t p)
+{
+    uint16_t r = 0u;
+    int i;
+    for (i = 0; i < 9; i++) {
+        r = (uint16_t)((r << 1) | ((p >> i) & 1u));
+    }
+    return r;
+}
 
 /* Expand a 9-bit pattern (MSB first) into 9 element widths. */
 static void emit_char(uint16_t pat, uint32_t *out)
@@ -79,12 +100,12 @@ static void frame_to_edges(const uint32_t frame[BARCODE_FRAME_ELEMENTS],
 /*
  * Drive a sequence of edge timestamps through the assembler, counting
  * VALID and INVALID results produced by edge_arrived only (no time
- * advance). Returns the last valid command seen.
+ * advance). Returns the last valid letter seen.
  */
 static void run_edges(barcode_asm_t *a,
                       const uint32_t *edges, uint32_t n,
                       int *valid_count, int *invalid_count,
-                      uint8_t *last_cmd)
+                      uint8_t *last_letter)
 {
     uint32_t i;
     for (i = 0; i < n; i++) {
@@ -92,7 +113,7 @@ static void run_edges(barcode_asm_t *a,
         if (barcode_asm_edge_arrived(a, edges[i], &out)) {
             if (barcode_is_valid(out)) {
                 (*valid_count)++;
-                *last_cmd = barcode_get_cmd(out);
+                *last_letter = barcode_get_letter(out);
             } else {
                 (*invalid_count)++;
             }
@@ -104,50 +125,105 @@ int main(void)
 {
     printf("== barcode decode tests ==\n");
 
-    /* --- valid frames: * <cmd> * --- */
+    /* --- pattern table sanity: Code 39 rules for every letter --- */
     {
-        uint32_t f[BARCODE_FRAME_ELEMENTS];
-        barcode_t r;
-
-        build_frame(T_STAR, T_A, T_STAR, f);
-        r = barcode_decode_frame(f);
-        CHECK(barcode_is_valid(r), "A decodes valid");
-        CHECK_EQ_INT(barcode_get_cmd(r), BARCMD_LEFT, "A -> LEFT");
-
-        build_frame(T_STAR, T_B, T_STAR, f);
-        r = barcode_decode_frame(f);
-        CHECK(barcode_is_valid(r), "B decodes valid");
-        CHECK_EQ_INT(barcode_get_cmd(r), BARCMD_RIGHT, "B -> RIGHT");
-
-        build_frame(T_STAR, T_C, T_STAR, f);
-        r = barcode_decode_frame(f);
-        CHECK(barcode_is_valid(r), "C decodes valid");
-        CHECK_EQ_INT(barcode_get_cmd(r), BARCMD_STRAIGHT, "C -> STRAIGHT");
-
-        build_frame(T_STAR, T_D, T_STAR, f);
-        r = barcode_decode_frame(f);
-        CHECK(barcode_is_valid(r), "D decodes valid");
-        CHECK_EQ_INT(barcode_get_cmd(r), BARCMD_U_TURN, "D -> U_TURN");
+        uint8_t i, j;
+        int ok_rules = 1, ok_unique = 1;
+        for (i = 0; i < BARCODE_LETTER_COUNT; i++) {
+            uint16_t p = barcode_letter_pattern(i);
+            int bars = 0, spaces = 0, k;
+            for (k = 0; k < 9; k++) {
+                if ((p >> (8 - k)) & 1u) {
+                    if (k % 2 == 0) bars++; else spaces++;
+                }
+            }
+            if (bars != 2 || spaces != 1) ok_rules = 0;
+            if (p == T_STAR) ok_unique = 0;
+            for (j = (uint8_t)(i + 1u); j < BARCODE_LETTER_COUNT; j++) {
+                if (barcode_letter_pattern(j) == p) ok_unique = 0;
+            }
+        }
+        CHECK(ok_rules, "every letter A..Z: 2 wide bars + 1 wide space");
+        CHECK(ok_unique, "every letter pattern unique and != '*'");
+        CHECK_EQ_INT(barcode_letter_pattern(L('A')), T_A, "table A = course sample A");
+        CHECK_EQ_INT(barcode_letter_pattern(L('F')), T_F, "table F = course sample F");
+        CHECK_EQ_INT(barcode_letter_pattern(L('W')), T_W, "table W = course sample W");
+        CHECK_EQ_INT(barcode_letter_pattern(L('X')), T_X, "table X = course sample X");
+        CHECK_EQ_INT(barcode_letter_pattern(L('Y')), T_Y, "table Y = course sample Y");
+        CHECK_EQ_INT(barcode_letter_pattern(L('Z')), T_Z, "table Z = course sample Z");
+        CHECK_EQ_INT(reverse9(T_STAR), T_P, "'*' read backwards is 'P'");
+        CHECK_EQ_INT(barcode_pattern_to_char(T_P), 'P', "so a backwards guard never reads as '*'");
     }
 
-    /* --- reversed frame still decodes (direction independence) --- */
+    /* --- every letter A..Z decodes, forwards AND backwards, same letter --- */
+    {
+        uint8_t i;
+        int fwd_ok = 1, rev_ok = 1;
+        for (i = 0; i < BARCODE_LETTER_COUNT; i++) {
+            uint32_t f[BARCODE_FRAME_ELEMENTS], rev[BARCODE_FRAME_ELEMENTS];
+            barcode_t r;
+            build_frame(T_STAR, barcode_letter_pattern(i), T_STAR, f);
+            r = barcode_decode_frame(f);
+            if (!barcode_is_valid(r) || barcode_get_letter(r) != i) fwd_ok = 0;
+            reverse_frame(f, rev);
+            r = barcode_decode_frame(rev);
+            if (!barcode_is_valid(r) || barcode_get_letter(r) != i) rev_ok = 0;
+        }
+        CHECK(fwd_ok, "all 26 letters decode correctly (forward scan)");
+        CHECK(rev_ok, "all 26 letters decode to the SAME letter (backward scan)");
+    }
+
+    /* --- course samples individually --- */
     {
         uint32_t f[BARCODE_FRAME_ELEMENTS], rev[BARCODE_FRAME_ELEMENTS];
         barcode_t r;
-        build_frame(T_STAR, T_B, T_STAR, f);
+        build_frame(T_STAR, T_A, T_STAR, f);
+        r = barcode_decode_frame(f);
+        CHECK(barcode_is_valid(r), "*A* decodes valid");
+        CHECK_EQ_INT(barcode_get_char(r), 'A', "*A* -> 'A'");
+
+        build_frame(T_STAR, T_Z, T_STAR, f);
+        r = barcode_decode_frame(f);
+        CHECK(barcode_is_valid(r), "*Z* decodes valid (A..Z all accepted)");
+        CHECK_EQ_INT(barcode_get_char(r), 'Z', "*Z* -> 'Z'");
+
+        build_frame(T_STAR, T_F, T_STAR, f);
         reverse_frame(f, rev);
         r = barcode_decode_frame(rev);
-        CHECK(barcode_is_valid(r), "reversed B decodes valid");
-        CHECK_EQ_INT(barcode_get_cmd(r), BARCMD_RIGHT, "reversed B -> RIGHT");
+        CHECK_EQ_INT(barcode_get_char(r), 'F', "backward *F* -> 'F'");
     }
 
-    /* --- Z is a valid Code39 char but NOT a command -> INVALID --- */
+    /* --- different print scale / speed: only the wide:narrow ratio matters --- */
+    {
+        uint32_t f[BARCODE_FRAME_ELEMENTS];
+        uint32_t i;
+        barcode_t r;
+        build_frame(T_STAR, T_W, T_STAR, f);
+        for (i = 0; i < BARCODE_FRAME_ELEMENTS; i++) {
+            f[i] = (f[i] == WIDE) ? 5u : 2u; /* 2.5:1 instead of 3:1 */
+        }
+        r = barcode_decode_frame(f);
+        CHECK_EQ_INT(barcode_get_char(r), 'W', "W decodes at 2.5:1 ratio");
+    }
+
+    /* --- non-letters (digits) -> INVALID --- */
     {
         uint32_t f[BARCODE_FRAME_ELEMENTS];
         barcode_t r;
-        build_frame(T_STAR, T_Z, T_STAR, f);
+        build_frame(T_STAR, T_DIGIT0, T_STAR, f);
         r = barcode_decode_frame(f);
-        CHECK(!barcode_is_valid(r), "Z -> INVALID (not a command)");
+        CHECK(!barcode_is_valid(r), "digit '0' -> INVALID (letters only)");
+    }
+
+    /* --- packing --- */
+    {
+        barcode_t b = barcode_pack_letter(L('Z'));
+        CHECK(barcode_is_valid(b), "pack Z valid");
+        CHECK_EQ_INT(barcode_get_letter(b), 25, "pack Z letter 25");
+        CHECK_EQ_INT(b.packed & 0xC0u, 0, "bits 6..7 stay 0");
+        b = barcode_pack_letter(26u);
+        CHECK(!barcode_is_valid(b), "letter 26 -> INVALID");
+        CHECK_EQ_INT(barcode_get_char(barcode_invalid()), '?', "invalid -> '?'");
     }
 
     /* --- missing start/stop guard -> INVALID --- */
@@ -234,13 +310,13 @@ int main(void)
     {
         barcode_asm_t a; barcode_asm_init(&a);
         uint32_t f[BARCODE_FRAME_ELEMENTS], ed[BARCODE_FRAME_EDGES];
-        int v = 0, inv = 0; uint8_t cmd = (uint8_t)BARCMD_LEFT;
+        int v = 0, inv = 0; uint8_t cmd = 0xFFu;
         build_frame(T_STAR, T_A, T_STAR, f);
         frame_to_edges(f, 100000u, 5000u, ed);
         run_edges(&a, ed, BARCODE_FRAME_EDGES, &v, &inv, &cmd);
         CHECK_EQ_INT(v, 1, "one A barcode -> exactly 1 VALID");
         CHECK_EQ_INT(inv, 0, "one A barcode -> 0 INVALID");
-        CHECK_EQ_INT(cmd, BARCMD_LEFT, "A -> LEFT via assembler");
+        CHECK_EQ_INT(cmd, L('A'), "assembler: A -> letter 'A'");
     }
 
     /* 2) a reversed read => 1 VALID */
@@ -248,21 +324,21 @@ int main(void)
         barcode_asm_t a; barcode_asm_init(&a);
         uint32_t f[BARCODE_FRAME_ELEMENTS], rev[BARCODE_FRAME_ELEMENTS];
         uint32_t ed[BARCODE_FRAME_EDGES];
-        int v = 0, inv = 0; uint8_t cmd = (uint8_t)BARCMD_LEFT;
+        int v = 0, inv = 0; uint8_t cmd = 0xFFu;
         build_frame(T_STAR, T_B, T_STAR, f);
         reverse_frame(f, rev);
         frame_to_edges(rev, 100000u, 5000u, ed);
         run_edges(&a, ed, BARCODE_FRAME_EDGES, &v, &inv, &cmd);
         CHECK_EQ_INT(v, 1, "reversed read -> 1 VALID");
         CHECK_EQ_INT(inv, 0, "reversed read -> 0 INVALID");
-        CHECK_EQ_INT(cmd, BARCMD_RIGHT, "reversed B -> RIGHT");
+        CHECK_EQ_INT(cmd, L('B'), "assembler: reversed B -> letter 'B'");
     }
 
     /* 3) two barcodes back to back => 2 VALID */
     {
         barcode_asm_t a; barcode_asm_init(&a);
         uint32_t f[BARCODE_FRAME_ELEMENTS], ed[BARCODE_FRAME_EDGES];
-        int v = 0, inv = 0; uint8_t cmd = (uint8_t)BARCMD_LEFT;
+        int v = 0, inv = 0; uint8_t cmd = 0xFFu;
         build_frame(T_STAR, T_C, T_STAR, f);
         frame_to_edges(f, 100000u, 5000u, ed);
         run_edges(&a, ed, BARCODE_FRAME_EDGES, &v, &inv, &cmd);
@@ -277,7 +353,7 @@ int main(void)
     {
         barcode_asm_t a; barcode_asm_init(&a);
         uint32_t f[BARCODE_FRAME_ELEMENTS], ed[BARCODE_FRAME_EDGES];
-        int v = 0, inv = 0; uint8_t cmd = (uint8_t)BARCMD_LEFT;
+        int v = 0, inv = 0; uint8_t cmd = 0xFFu;
         barcode_t out;
         uint8_t fired;
         build_frame(T_STAR, T_A, T_STAR, f);
@@ -337,7 +413,7 @@ int main(void)
         CHECK_EQ_INT(seen, q.dropped, "last-seen updated to current count");
 
         /* mirror the task's rule: drops since last frame -> INVALID */
-        result = barcode_pack(1u, BARCMD_LEFT); /* pretend a decode happened */
+        result = barcode_pack_letter(0u); /* pretend a decode happened */
         if (delta != 0u) {
             result = barcode_invalid();
         }
@@ -357,7 +433,7 @@ int main(void)
     {
         barcode_asm_t a; barcode_asm_init(&a);
         uint32_t f[BARCODE_FRAME_ELEMENTS], ed[BARCODE_FRAME_EDGES];
-        int v = 0, inv = 0; uint8_t cmd = (uint8_t)BARCMD_LEFT;
+        int v = 0, inv = 0; uint8_t cmd = 0xFFu;
         uint32_t i;
         barcode_t out;
         build_frame(T_STAR, T_D, T_STAR, f);
@@ -369,7 +445,7 @@ int main(void)
             if (barcode_asm_edge_arrived(&a, ed[i], &out)) {
                 if (barcode_is_valid(out)) {
                     v++;
-                    cmd = barcode_get_cmd(out);
+                    cmd = barcode_get_letter(out);
                 } else {
                     inv++;
                 }
@@ -382,7 +458,7 @@ int main(void)
         }
         CHECK_EQ_INT(v, 1, "slow run -> 1 VALID (no timeout trip)");
         CHECK_EQ_INT(inv, 0, "slow run -> 0 INVALID");
-        CHECK_EQ_INT(cmd, BARCMD_U_TURN, "slow D -> U_TURN");
+        CHECK_EQ_INT(cmd, L('D'), "slow D -> letter 'D'");
     }
 
     return TEST_SUMMARY();

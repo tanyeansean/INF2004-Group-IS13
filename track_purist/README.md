@@ -15,7 +15,7 @@ C with the Pico C SDK, micro T-Kernel (uT-Kernel 3.0) RTOS.
 
 - `line_err_q` — packed `line_err_t` (13 bits of a `uint16_t`) every 5 ms:
   10-bit signed error + junction flag + lost-line flag.
-- `barcode_q` — packed `barcode_t` (valid bit + 2-bit command).
+- `barcode_q` — packed `barcode_t` (valid bit + 5-bit letter A–Z; see TEAM_HANDOFF.md).
 
 All inter-task / ISR-to-task data is bit-packed per Change Requirement 1.
 

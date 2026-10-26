@@ -5,10 +5,12 @@
  * All inter-task / ISR-to-task application data is bit-packed per
  * Change Requirement 1 (Minimum-Bit Data Representation).
  *
- * Hardware (IS13, 3 IR sensors):
- *   - Left  IR : analog, GP26 / ADC0  (line following)
- *   - Center IR: analog, GP28 / ADC2  (line following)
- *   - Right IR : digital, edge interrupt (barcode, right side of track)
+ * Hardware (IS13, 3 IR sensors, Robo Pico Grove ports):
+ *   - Left  front IR: analog, GP27 / ADC1, Grove 6 (line following)
+ *   - Right front IR: analog, GP26 / ADC0, Grove 5 (line following;
+ *                     called "center" in the line_follow API)
+ *   - Barcode IR    : digital D0, GP7, Grove 7, edge interrupt
+ *                     (car's LEFT side)
  *
  * This header is pure C with no SDK / RTOS dependency so it can be
  * compiled on the host for unit testing.
@@ -23,51 +25,58 @@ extern "C" {
 #endif
 
 /* ------------------------------------------------------------------ */
-/* Barcode command set (2-bit)                                         */
+/* Movement set (2-bit)                                                */
 /* ------------------------------------------------------------------ */
 /**
- * Decoded barcode command. PLACEHOLDER mapping — confirm the physical
- * barcode-to-command assignment with the team before the demo.
- * Exactly 4 values so it fits in 2 bits. There is deliberately no STOP.
+ * The four movements a barcode can trigger at the next cross-junction.
+ * Which LETTER means which movement is NOT fixed: it is sent from the PC
+ * over MQTT just before the demo (see nav_cmd.h). Exactly 4 values so a
+ * movement fits in 2 bits. (Names kept as BARCMD_* for compatibility;
+ * BARCMD_STRAIGHT = "forward".)
  */
 typedef enum {
     BARCMD_LEFT     = 0u,  /* 0b00 */
     BARCMD_RIGHT    = 1u,  /* 0b01 */
-    BARCMD_STRAIGHT = 2u,  /* 0b10 */
+    BARCMD_STRAIGHT = 2u,  /* 0b10  forward */
     BARCMD_U_TURN   = 3u   /* 0b11 */
 } barcode_cmd_t;
 
+#define BARCMD_COUNT         4u
+
 /* ------------------------------------------------------------------ */
-/* barcode_q message: valid bit + 2-bit command, packed in one byte    */
+/* barcode_q message: valid bit + 5-bit letter, packed in one byte     */
 /* ------------------------------------------------------------------ */
 /**
  * Packed barcode result published to barcode_q.
- *   bit0      : valid  (1 = a barcode was decoded, 0 = INVALID)
- *   bits1..2  : cmd    (barcode_cmd_t, only meaningful when valid == 1)
- * Remaining bits reserved (keep 0).
+ *   bit0      : valid  (1 = a Code 39 '*<letter>*' was decoded, 0 = INVALID)
+ *   bits1..5  : letter (0 = 'A' .. 25 = 'Z'; only meaningful when valid)
+ *   bits6..7  : reserved (keep 0)
+ *
+ * The decoder reports the LETTER, not a movement: the letter->movement
+ * mapping arrives over MQTT at runtime and is applied by nav_cmd.
  *
  * ONE writer rule: only the Barcode Decode task writes this value.
- * The Right-IR edge ISR never writes it; it only timestamps edges.
+ * The barcode edge ISR never writes it; it only timestamps edges.
  */
 typedef struct {
-    uint8_t packed; /* [valid:1][cmd:2][reserved:5] */
+    uint8_t packed; /* [valid:1][letter:5][reserved:2] */
 } barcode_t;
 
-#define BARCODE_VALID_MASK   0x01u
-#define BARCODE_CMD_SHIFT     1u
-#define BARCODE_CMD_MASK     0x03u
+#define BARCODE_VALID_MASK     0x01u
+#define BARCODE_LETTER_SHIFT   1u
+#define BARCODE_LETTER_MASK    0x1Fu
+#define BARCODE_LETTER_COUNT   26u   /* A..Z */
 
-/*
- * cmd is carried as uint8_t (0..3), not the enum type, so no 4-byte
- * enum is used as a stored value, parameter, or return (Change
- * Requirement 1, minimum bits). The BARCMD_* names remain the documented
- * value set.
- */
-static inline barcode_t barcode_pack(uint8_t valid, uint8_t cmd)
+/* Pack a decoded letter index (0..25). Out-of-range => INVALID. */
+static inline barcode_t barcode_pack_letter(uint8_t letter)
 {
     barcode_t b;
-    b.packed = (uint8_t)((valid & BARCODE_VALID_MASK) |
-                         ((cmd & BARCODE_CMD_MASK) << BARCODE_CMD_SHIFT));
+    if (letter >= BARCODE_LETTER_COUNT) {
+        b.packed = 0u;
+    } else {
+        b.packed = (uint8_t)(BARCODE_VALID_MASK |
+                             ((letter & BARCODE_LETTER_MASK) << BARCODE_LETTER_SHIFT));
+    }
     return b;
 }
 
@@ -76,12 +85,23 @@ static inline uint8_t barcode_is_valid(barcode_t b)
     return (uint8_t)(b.packed & BARCODE_VALID_MASK);
 }
 
-static inline uint8_t barcode_get_cmd(barcode_t b)
+/** Letter index 0..25 (A..Z). Only meaningful if barcode_is_valid(). */
+static inline uint8_t barcode_get_letter(barcode_t b)
 {
-    return (uint8_t)((b.packed >> BARCODE_CMD_SHIFT) & BARCODE_CMD_MASK);
+    return (uint8_t)((b.packed >> BARCODE_LETTER_SHIFT) & BARCODE_LETTER_MASK);
 }
 
-/* An INVALID result: valid = 0, cmd = 0. */
+/** ASCII 'A'..'Z' for a valid result, '?' otherwise. */
+static inline char barcode_get_char(barcode_t b)
+{
+    uint8_t l = barcode_get_letter(b);
+    if (!barcode_is_valid(b) || l >= BARCODE_LETTER_COUNT) {
+        return '?';
+    }
+    return (char)('A' + l);
+}
+
+/* An INVALID result: all bits 0. */
 static inline barcode_t barcode_invalid(void)
 {
     barcode_t b;
@@ -96,15 +116,16 @@ static inline barcode_t barcode_invalid(void)
  * Packed line-following result published to line_err_q every 5 ms.
  *
  * Layout inside a uint16_t (13 bits used, 3 bits reserved):
- *   bits 0..9   : error   (10-bit signed, two's complement, -512..+511)
+ *   bits 0..9   : error     (10-bit signed, two's complement, -512..+511;
+ *                            +ve = line under LEFT sensor, -ve = under
+ *                            RIGHT sensor, 0 = centred / both white)
  *   bit  10     : junction  (1 = both sensors black held >= N ms)
- *   bit  11     : lost_line (1 = both sensors on background/white)
- *   bit  12     : reserved-for-future flag (keep 0)
+ *   bit  11     : lost_line (1 = line data NOT usable, e.g. uncalibrated
+ *                            -> Mission Control should hold the car)
+ *   bit  12     : last_side (0 = LEFT sensor last saw the line,
+ *                            1 = RIGHT sensor last saw it; use it to
+ *                            steer back if both go white after a bend)
  *   bits 13..15 : reserved (keep 0)
- *
- * error is derived from (left_adc - center_adc); 0 means centered on
- * the followed edge. Sign convention: positive = drifted one way,
- * negative = the other (fixed in line_follow.c, documented there).
  */
 typedef struct {
     uint16_t packed;
@@ -115,6 +136,10 @@ typedef struct {
 #define LINE_ERR_SIGN_BIT    (1u << (LINE_ERR_BITS - 1u)) /* 0x0200 */
 #define LINE_JUNCTION_BIT    (1u << 10)
 #define LINE_LOST_BIT        (1u << 11)
+#define LINE_LAST_SIDE_BIT   (1u << 12)
+
+#define LINE_SIDE_LEFT       0u
+#define LINE_SIDE_RIGHT      1u
 
 #define LINE_ERR_MIN         (-512)
 #define LINE_ERR_MAX         ( 511)
@@ -159,6 +184,22 @@ static inline uint8_t line_err_get_junction(line_err_t l)
 static inline uint8_t line_err_get_lost(line_err_t l)
 {
     return (uint8_t)((l.packed & LINE_LOST_BIT) ? 1u : 0u);
+}
+
+/** Return l with the last_side bit set to side (LINE_SIDE_LEFT/RIGHT). */
+static inline line_err_t line_err_with_last_side(line_err_t l, uint8_t side)
+{
+    if (side) {
+        l.packed = (uint16_t)(l.packed | LINE_LAST_SIDE_BIT);
+    } else {
+        l.packed = (uint16_t)(l.packed & (uint16_t)~LINE_LAST_SIDE_BIT);
+    }
+    return l;
+}
+
+static inline uint8_t line_err_get_last_side(line_err_t l)
+{
+    return (uint8_t)((l.packed & LINE_LAST_SIDE_BIT) ? 1u : 0u);
 }
 
 /* ------------------------------------------------------------------ */

@@ -36,3 +36,11 @@ add_executable(test_line_follow
 target_include_directories(test_line_follow PRIVATE ${TP_INC} ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(test_line_follow PRIVATE LINE_FOLLOW_HOST_TEST)
 add_test(NAME line_follow COMMAND test_line_follow)
+
+
+# Navigation command interface: MQTT mapping + junction trigger.
+add_executable(test_nav_cmd
+    test_nav_cmd.c
+    ${TP_SRC}/nav_cmd.c)
+target_include_directories(test_nav_cmd PRIVATE ${TP_INC} ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME nav_cmd COMMAND test_nav_cmd)

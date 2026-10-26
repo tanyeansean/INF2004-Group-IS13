@@ -35,6 +35,7 @@ add_executable(track_purist_selftest
         ../src/line_follow.c
         ../src/ir_calibrate.c
         ../src/barcode_decode.c
+        ../src/nav_cmd.c
 )
 
 pico_set_program_name(track_purist_selftest "track_purist_selftest")

@@ -1,28 +1,31 @@
 /**
  * @file barcode_decode.h
- * @brief Barcode Decode module (Buddy 3) — Right digital IR, edge timestamps.
+ * @brief Barcode Decode module (Buddy 3) — barcode digital IR, edge timestamps.
  *
  * Pipeline:
- *   Right-IR edge ISR  -> timestamp only -> 32-entry edge queue
- *   Decode task        -> read edges -> build 30-edge
- *                         Code 39 frame -> decode -> barcode_q
+ *   Barcode-IR edge ISR -> timestamp only -> 32-entry edge queue
+ *   Decode task         -> read edges -> build 30-edge
+ *                          Code 39 frame -> decode letter -> barcode_q
  *
  * Code 39 frame model used here:
  *   - A single Code 39 character = 9 elements (5 bars + 4 spaces),
  *     of which exactly 3 are WIDE and 6 are NARROW. Characters are
  *     separated by a narrow inter-character gap.
- *   - This decoder expects a 3-character frame:  *  <CMD>  *
- *     '*' is the Code 39 start/stop guard.
+ *   - This decoder expects a 3-character frame:  *  <LETTER>  *
+ *     '*' is the Code 39 start/stop guard; LETTER is any of A..Z.
  *   - 3 chars x 9 elements + 2 inter-character gaps = 29 elements.
  *     That is 15 bars = 30 edges = 29 measured widths. There is NO
  *     30th element: after the last bar the sensor sees plain paper, so
  *     no further edge arrives.
  *   - valid bit is set only when BOTH guards decode as '*'.
- *   - The middle character is matched against a 4-entry command table.
  *   - If the forward frame fails, the REVERSED frame is tried (the car
- *     may read the barcode from either travel direction).
- *   - Anything else (bad guards, unknown middle char including 'Z', or a
+ *     may read the barcode from either travel direction). '*' reversed
+ *     reads as 'P', so only the true direction can pass the guards and
+ *     both directions report the SAME letter.
+ *   - Anything else (bad guards, digits/symbols, ambiguous widths, or a
  *     frame that is not 29 elements) => INVALID.
+ *   - The decoder reports the LETTER only. Letter -> movement is applied
+ *     later by nav_cmd using the mapping received over MQTT.
  *
  * The decode logic is pure and host-testable: see barcode_decode_frame().
  */
@@ -143,16 +146,13 @@ uint8_t barcode_classify_char(const uint32_t elems[BARCODE_CHAR_ELEMENTS],
 
 /**
  * Map a 9-bit Code 39 element pattern to an ASCII character.
- * Recognises only '*' (guard) and the 4 command characters in the table.
- * Returns the ASCII char, or 0 if not recognised.
+ * Recognises '*' (guard) and the letters 'A'..'Z'.
+ * Returns the ASCII char, or 0 if not recognised (digits/symbols too).
  */
 char barcode_pattern_to_char(uint16_t pattern9);
 
-/**
- * Map a decoded command CHARACTER to a command code (0..3).
- * Returns 1 and sets *cmd on success, 0 if the char is not a command.
- */
-uint8_t barcode_char_to_cmd(char c, uint8_t *cmd);
+/** 9-bit Code 39 pattern for letter index 0..25 ('A'..'Z'); 0 if out of range. */
+uint16_t barcode_letter_pattern(uint8_t letter);
 
 /* ---- Edge queue (ISR producer / task consumer), ring buffer ---- */
 /*

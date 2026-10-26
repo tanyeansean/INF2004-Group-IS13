@@ -16,39 +16,65 @@
 /* ------------------------------------------------------------------ */
 /* Code 39 pattern table (9-bit, MSB = first element)                  */
 /* ------------------------------------------------------------------ */
-/* '*' start/stop guard. */
+/* '*' start/stop guard. Read backwards it is 'P' (0x052), so a frame
+   whose guards are both '*' identifies the scan direction uniquely. */
 #define PAT_STAR  0x094u /* 0 1001 0100 */
 
-/* Four command characters (placeholder mapping A/B/C/D -> commands). */
-#define PAT_A     0x109u /* 1 0000 1001 */
-#define PAT_B     0x049u /* 0 0100 1001 */
-#define PAT_C     0x148u /* 1 0100 1000 */
-#define PAT_D     0x019u /* 0 0001 1001 */
-/* 'Z' is intentionally NOT a command -> must decode as INVALID. */
-#define PAT_Z     0x0D0u /* 0 1101 0000  (nWWnWnnnn, real Code 39 'Z') */
+/*
+ * Code 39 letters A..Z (ISO/IEC 16388). Index 0 = 'A'.
+ * Each pattern has exactly 3 wide elements (2 wide bars + 1 wide space).
+ * Verified against the course samples: A, F, W, X, Y, Z.
+ */
+static const uint16_t k_letter_pat[BARCODE_LETTER_COUNT] = {
+    0x109u, /* A 100001001 */
+    0x049u, /* B 001001001 */
+    0x148u, /* C 101001000 */
+    0x019u, /* D 000011001 */
+    0x118u, /* E 100011000 */
+    0x058u, /* F 001011000 */
+    0x00Du, /* G 000001101 */
+    0x10Cu, /* H 100001100 */
+    0x04Cu, /* I 001001100 */
+    0x01Cu, /* J 000011100 */
+    0x103u, /* K 100000011 */
+    0x043u, /* L 001000011 */
+    0x142u, /* M 101000010 */
+    0x013u, /* N 000010011 */
+    0x112u, /* O 100010010 */
+    0x052u, /* P 001010010 */
+    0x007u, /* Q 000000111 */
+    0x106u, /* R 100000110 */
+    0x046u, /* S 001000110 */
+    0x016u, /* T 000010110 */
+    0x181u, /* U 110000001 */
+    0x0C1u, /* V 011000001 */
+    0x1C0u, /* W 111000000 */
+    0x091u, /* X 010010001 */
+    0x190u, /* Y 110010000 */
+    0x0D0u  /* Z 011010000 */
+};
 
 char barcode_pattern_to_char(uint16_t pattern9)
 {
+    uint8_t i;
     pattern9 &= 0x1FFu;
-    switch (pattern9) {
-        case PAT_STAR: return '*';
-        case PAT_A:    return 'A';
-        case PAT_B:    return 'B';
-        case PAT_C:    return 'C';
-        case PAT_D:    return 'D';
-        default:       return 0;   /* unknown (includes PAT_Z) */
+    if (pattern9 == PAT_STAR) {
+        return '*';
     }
+    for (i = 0u; i < BARCODE_LETTER_COUNT; i++) {
+        if (k_letter_pat[i] == pattern9) {
+            return (char)('A' + i);
+        }
+    }
+    return 0; /* digits / symbols / garbage: not accepted */
 }
 
-uint8_t barcode_char_to_cmd(char c, uint8_t *cmd)
+uint16_t barcode_letter_pattern(uint8_t letter)
 {
-    switch (c) {
-        case 'A': *cmd = (uint8_t)BARCMD_LEFT;     return 1u;
-        case 'B': *cmd = (uint8_t)BARCMD_RIGHT;    return 1u;
-        case 'C': *cmd = (uint8_t)BARCMD_STRAIGHT; return 1u;
-        case 'D': *cmd = (uint8_t)BARCMD_U_TURN;   return 1u;
-        default:  return 0u;
+    if (letter >= BARCODE_LETTER_COUNT) {
+        return 0u;
     }
+    return k_letter_pat[letter];
 }
 
 /* ------------------------------------------------------------------ */
@@ -106,13 +132,15 @@ uint8_t barcode_classify_char(const uint32_t elems[BARCODE_CHAR_ELEMENTS],
  *   char0 (9) | gap (1) | char1 (9) | gap (1) | char2 (9) = 29.
  *   We decode char0, char1, char2 from fixed offsets 0, 10, 20 and
  *   ignore the inter-character gaps at 9 and 19.
- *   Valid iff char0 == '*' and char2 == '*' and char1 is a command.
+ *   Valid iff char0 == '*' and char2 == '*' and char1 is a letter A..Z.
+ *   Because '*' is asymmetric (reversed it reads 'P'), at most ONE scan
+ *   direction can pass the guard check, so a reversed scan always yields
+ *   the same letter as a forward scan.
  */
 static barcode_t decode_oriented(const uint32_t w[BARCODE_FRAME_ELEMENTS])
 {
     uint16_t p0, p1, p2;
     char c0, c1, c2;
-    uint8_t cmd;
 
     if (!barcode_classify_char(&w[0],  &p0)) {
         return barcode_invalid();
@@ -131,11 +159,11 @@ static barcode_t decode_oriented(const uint32_t w[BARCODE_FRAME_ELEMENTS])
     if (c0 != '*' || c2 != '*') {
         return barcode_invalid();
     }
-    if (!barcode_char_to_cmd(c1, &cmd)) {
+    if (c1 < 'A' || c1 > 'Z') {
         return barcode_invalid();
     }
 
-    return barcode_pack(1u, cmd);
+    return barcode_pack_letter((uint8_t)(c1 - 'A'));
 }
 
 barcode_t barcode_decode_frame(const uint32_t widths[BARCODE_FRAME_ELEMENTS])

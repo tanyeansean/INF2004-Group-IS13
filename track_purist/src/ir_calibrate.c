@@ -65,5 +65,10 @@ uint8_t ir_cal_apply(const ir_cal_accum_t *left,
     cfg->center_threshold = ct;
     /* Both sensors share polarity; derive from the Left accumulator. */
     cfg->dark_is_high = ir_cal_dark_is_high(left);
+    /* Per-sensor means for darkness normalisation (line = black). */
+    cfg->left_white   = (uint16_t)(left->bg_sum     / left->bg_count);
+    cfg->left_black   = (uint16_t)(left->line_sum   / left->line_count);
+    cfg->center_white = (uint16_t)(center->bg_sum   / center->bg_count);
+    cfg->center_black = (uint16_t)(center->line_sum / center->line_count);
     return 1u;
 }

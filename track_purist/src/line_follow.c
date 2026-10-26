@@ -10,17 +10,16 @@
 #include "line_follow.h"
 
 /*
- * Sign convention for error:
- *   error = (left_adc - center_adc) scaled by error_gain, after removing
- *   the sensor polarity via dark_is_high (so "more black" always pushes
- *   the raw difference positive before scaling).
- *
- * We follow the LEFT edge of the line with Left + Center sensors:
- *   - Centered on the edge -> both sensors see a similar mix -> error ~ 0.
- *   - LEFT sees more black than Center -> error > 0.
- *   - CENTER sees more black than Left -> error < 0.
- * Mission Control interprets the sign; what matters here is that 0 is
- * centered and the magnitude grows with deviation.
+ * Sign convention for error (straddle layout, see line_follow.h):
+ *   error = (darkness(left) - darkness(center)) * error_gain, where each
+ *   sensor's darkness is normalised 0..511 between its own calibrated
+ *   white and black means (so polarity and per-sensor contrast are
+ *   removed before the difference).
+ *   - Line between the sensors (both white)  -> error ~ 0 (centred).
+ *   - Line under the LEFT sensor             -> error > 0.
+ *   - Line under the RIGHT ("center") sensor -> error < 0.
+ * Mission Control interprets the sign; 0 is centred and the magnitude
+ * grows with deviation.
  */
 
 uint8_t line_follow_on_black(const line_follow_cfg_t *cfg,
@@ -33,10 +32,32 @@ uint8_t line_follow_on_black(const line_follow_cfg_t *cfg,
     return (uint8_t)(adc <= thr ? 1u : 0u);
 }
 
+uint16_t line_follow_darkness(uint16_t adc, uint16_t white, uint16_t black)
+{
+    uint32_t num, den;
+    if (white == black) {
+        return 0u; /* no contrast: cannot normalise */
+    }
+    if (black > white) {            /* dark reads high */
+        if (adc <= white) { return 0u; }
+        if (adc >= black) { return (uint16_t)LINE_DARK_MAX; }
+        num = (uint32_t)(adc - white);
+        den = (uint32_t)(black - white);
+    } else {                        /* dark reads low */
+        if (adc >= white) { return 0u; }
+        if (adc <= black) { return (uint16_t)LINE_DARK_MAX; }
+        num = (uint32_t)(white - adc);
+        den = (uint32_t)(white - black);
+    }
+    return (uint16_t)((num * (uint32_t)LINE_DARK_MAX) / den);
+}
+
 void line_follow_reset(line_follow_state_t *state)
 {
     state->both_black_since_ms = 0u;
     state->junction_latched = 0u;
+    state->white_since_ms = 0u;
+    state->last_side = LINE_SIDE_LEFT;
 }
 
 static int16_t clamp_err(int32_t v)
@@ -56,6 +77,8 @@ line_err_t line_follow_step(const line_follow_cfg_t *cfg,
 {
     uint8_t left_black   = line_follow_on_black(cfg, sample->left_adc, 0u);
     uint8_t center_black = line_follow_on_black(cfg, sample->center_adc, 1u);
+    uint16_t dl = line_follow_darkness(sample->left_adc,   cfg->left_white,   cfg->left_black);
+    uint16_t dc = line_follow_darkness(sample->center_adc, cfg->center_white, cfg->center_black);
 
     uint8_t junction = 0u;
     uint8_t lost     = 0u;
@@ -78,25 +101,43 @@ line_err_t line_follow_step(const line_follow_cfg_t *cfg,
                 state->junction_latched = 1u;  /* confirmed at least once */
             }
         }
-        error = 0; /* straddling a crossing: no meaningful edge error */
-    } else if (!left_black && !center_black) {
-        /* Both on background: line lost. */
-        lost = 1u;
-        error = 0;
-        state->both_black_since_ms = 0u;
-        state->junction_latched = 0u;
+        error = 0; /* straddling a crossing: no meaningful steering error */
+        state->white_since_ms = 0u;
     } else {
-        /* Normal edge following: proportional difference. */
-        int32_t diff = (int32_t)sample->left_adc - (int32_t)sample->center_adc;
-        if (!cfg->dark_is_high) {
-            diff = -diff; /* normalise so sign is sensor-polarity independent */
-        }
-        error = clamp_err(diff * (int32_t)cfg->error_gain);
+        /* Straddle following: line between the sensors => both white,
+           darkness ~0 each, error ~0 (CENTRED, not lost). As the line
+           slides under one sensor its darkness rises smoothly. */
         state->both_black_since_ms = 0u;
         state->junction_latched = 0u;
+        error = clamp_err(((int32_t)dl - (int32_t)dc) * (int32_t)cfg->error_gain);
+
+        /* Lost only if both are clearly white (neither even near the
+           line) for lost_timeout_ms. Both-white alone is ambiguous with
+           centred, so a timeout is the only signal two sensors give. */
+        if (!left_black && !center_black &&
+            dl < LINE_NEAR_DARK && dc < LINE_NEAR_DARK) {
+            if (state->white_since_ms == 0u) {
+                state->white_since_ms = sample->now_ms + 1u;
+            }
+            if (cfg->lost_timeout_ms != 0u &&
+                (sample->now_ms - (state->white_since_ms - 1u)) >= cfg->lost_timeout_ms) {
+                lost = 1u;
+                error = 0;
+            }
+        } else {
+            state->white_since_ms = 0u;
+        }
     }
 
-    return line_err_pack(error, junction, lost);
+    /* Remember which sensor last saw the line (exactly one black). */
+    if (left_black && !center_black) {
+        state->last_side = LINE_SIDE_LEFT;
+    } else if (center_black && !left_black) {
+        state->last_side = LINE_SIDE_RIGHT;
+    }
+
+    return line_err_with_last_side(line_err_pack(error, junction, lost),
+                                   state->last_side);
 }
 
 /* ------------------------------------------------------------------ */
@@ -140,6 +181,7 @@ void line_follow_task(void)
     /* Fixed tuning that is not derived from sensor data. */
     cfg.junction_hold_ms = 30u;
     cfg.error_gain       = 1;
+    cfg.lost_timeout_ms  = 0u;    /* time-based lost OFF (both white = centred on straights) */
 
     /* ---- READY: collect calibration samples, then compute thresholds ---- */
     ir_cal_reset(&cal_left);
