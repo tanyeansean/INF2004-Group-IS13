@@ -1,0 +1,4 @@
+build/
+comms/wifi_secrets.h
+tools/__pycache__/
+tools/*.csv
