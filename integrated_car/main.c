@@ -36,6 +36,7 @@
 #include "nav_cmd.h"
 
 #include "comms.h"
+#include "comms_config.h"   /* CMD_SPEED_MAX_CMS (20 cm/s cap) */
 #include "telemetry.h"
 
 #include "motor.h"
@@ -72,10 +73,24 @@
 #ifndef JUNCTION_STOPS
 #define JUNCTION_STOPS       1   /* 1 = stop at a junction, no barcode turn */
 #endif
+/* PWM for "speed 20" (CMD_SPEED_MAX_CMS, the 20 cm/s cap set by comms).
+   85 keeps the old scale (speed 60 -> 255) until it is measured on the track:
+   set it to the PWM that really gives about 20 cm/s. */
+#ifndef PWM_AT_SPEED_MAX
+#define PWM_AT_SPEED_MAX     85
+#endif
 #define TURN_PWM           130   /* wheel PWM while spinning at a junction */
 #define TURN_90_MS         450u  /* spin time for LEFT / RIGHT             */
 #define TURN_180_MS        900u  /* spin time for U-TURN                   */
 #define CROSS_MS           300u  /* drive straight to clear a junction     */
+
+/* 1 = after every barcode result (VALID or INVALID) print one debug line:
+   window edge count, edges in the burst, glitch pulses cancelled, longest
+   element and all element widths in ms. Printed from the main loop, outside
+   the 5 ms line-follow step. Keep 0 in the final car build. */
+#ifndef BARCODE_DEBUG
+#define BARCODE_DEBUG        0
+#endif
 
 #define CAL_COUNTDOWN_S      3
 #define CAL_SAMPLES        150   /* x 10 ms = 1.5 s per phase */
@@ -200,10 +215,14 @@ static void maneuver_step(line_follow_state_t *ls)
 /* ---- MQTT commands (comms_poll() calls this, main-loop context) ---------- */
 static line_follow_state_t *g_ls_for_cmd;
 
-static void on_command(comms_cmd_t const *p_cmd)
+/* Returns true if the command was taken, false if not (the MQTT ack then
+   says "rejected" instead of "accepted"). */
+static bool on_command(comms_cmd_t const *p_cmd)
 {
+    bool b_ok = true;
     switch (p_cmd->type) {
         case CMD_START:
+            if (!g_calibrated) { b_ok = false; }   /* start is ignored until READY */
             if (g_mode == CAR_IDLE) { car_start(g_ls_for_cmd); }
             break;
         case CMD_STOP:
@@ -212,13 +231,13 @@ static void on_command(comms_cmd_t const *p_cmd)
             break;
         case CMD_ESTOP:
             car_stop(ROBOT_STOPPED);
-            telem_log("ESTOP received");
             printf("[car] ESTOP (MQTT)\n");
             break;
         case CMD_SET_SPEED:
-            /* No encoders: "speed N" (cm/s) is scaled to PWM, 60 -> 255. */
-            if (p_cmd->arg > 0 && p_cmd->arg <= 60) {
-                g_base_m1 = (int16_t)((p_cmd->arg * MOTOR_MAX_SPEED) / 60);
+            /* No encoders: "speed N" (cm/s, capped at CMD_SPEED_MAX_CMS by
+               comms) is scaled to PWM, CMD_SPEED_MAX_CMS -> PWM_AT_SPEED_MAX. */
+            if (p_cmd->arg > 0 && p_cmd->arg <= CMD_SPEED_MAX_CMS) {
+                g_base_m1 = (int16_t)((p_cmd->arg * PWM_AT_SPEED_MAX) / CMD_SPEED_MAX_CMS);
                 g_base_m2 = (int16_t)((g_base_m1 * BASE_PWM_M2) / BASE_PWM_M1);
                 if (g_base_m2 > MOTOR_MAX_SPEED) { g_base_m2 = MOTOR_MAX_SPEED; }
                 printf("[car] base PWM M1=%d M2=%d\n", g_base_m1, g_base_m2);
@@ -230,11 +249,57 @@ static void on_command(comms_cmd_t const *p_cmd)
         default:
             break;
     }
+    return b_ok;
 }
 
 static telem_move_t to_telem_move(uint8_t barcmd)
 {
     return (barcmd < BARCMD_COUNT) ? (telem_move_t)barcmd : TELEM_MOVE_UNMAPPED;
+}
+
+/* One barcode result (VALID or INVALID) from the assembler. Main-loop
+   context, never inside the 5 ms line-follow step. */
+static void on_barcode_result(const barcode_asm_t *p_asm, barcode_t res,
+                              nav_state_t *nav, uint8_t *p_seen_dropped)
+{
+    barcode_frame_info_t info;
+
+    barcode_asm_last_frame(p_asm, &info);
+    if (barcode_eq_overflow_delta(&g_eq, p_seen_dropped) != 0u) {
+        res = barcode_invalid();          /* edges were dropped: untrusted */
+    }
+
+    if (barcode_is_valid(res)) {
+        uint8_t mv = 0;
+        uint8_t mapped = nav_map_lookup(nav_map_snapshot(&g_nav_map),
+                                        barcode_get_letter(res), &mv);
+        printf("[bar] VALID '%c'%s\n", barcode_get_char(res),
+               mapped ? "" : " (not in map)");
+        nav_on_barcode(nav, res);
+        if (g_comms_ok) {
+            telem_event_barcode(barcode_get_char(res),
+                                mapped ? to_telem_move(mv) : TELEM_MOVE_UNMAPPED);
+        }
+    } else {
+        if (info.outcome == BARCODE_OUT_PARTIAL) {
+            printf("[bar] INVALID (partial: %u of 30 edges)\n", (unsigned)info.n_edges);
+        } else {
+            printf("[bar] INVALID (%u edges, no window decoded)\n", (unsigned)info.burst_edges);
+        }
+        if (g_comms_ok) { telem_event_barcode('?', TELEM_MOVE_UNMAPPED); }
+    }
+
+#if BARCODE_DEBUG
+    printf("[bar dbg] %s edges=%u burst=%u chatter=%u longest=%lu.%lu ms widths ms:",
+           barcode_is_valid(res) ? "VALID" : "INVALID",
+           (unsigned)info.n_edges, (unsigned)info.burst_edges, (unsigned)info.chatter_pairs,
+           (unsigned long)(info.longest_us / 1000u), (unsigned long)((info.longest_us % 1000u) / 100u));
+    for (uint8_t i = 0u; i < info.n_widths; i++) {
+        printf(" %lu.%lu", (unsigned long)(info.widths_us[i] / 1000u),
+               (unsigned long)((info.widths_us[i] % 1000u) / 100u));
+    }
+    printf("\n");
+#endif
 }
 
 /* ---- Serial commands: S, X, ABCD, #Z -------------------------------------- */
@@ -341,7 +406,7 @@ int main(void)
     absolute_time_t deadline = make_timeout_time_ms(10000);
     while (!stdio_usb_connected() && !time_reached(deadline)) { sleep_ms(100); }
     sleep_ms(300);
-    printf("\n=== integrated_car v0.7 (base M1=%d M2=%d, start = %s, steer_invert = %d, junction = %s) ===\n",
+    printf("\n=== integrated_car v0.8, comms v0.3.1 (base M1=%d M2=%d, start = %s, steer_invert = %d, junction = %s) ===\n",
            BASE_PWM_M1, BASE_PWM_M2,
            STEERING_ENABLED ? "line steering" : "straight, both wheels",
            STEER_INVERT,
@@ -382,7 +447,7 @@ int main(void)
     nav_reset(&nav);
 
     barcode_asm_t basm;
-    barcode_asm_init(&basm);           /* car timing: 150 ms quiet timeout */
+    barcode_asm_init(&basm);           /* size/speed independent, see barcode_decode.h */
     uint8_t seen_dropped = 0;
     (void)barcode_eq_overflow_delta(&g_eq, &seen_dropped);
 
@@ -433,10 +498,9 @@ int main(void)
             g_rb = r_blk;
 
             if (g_comms_ok) {
-                int16_t pos = (int16_t)(err / 4);          /* -128..127 */
-                if (pos > 127) { pos = 127; }
+                int16_t pos = (int16_t)(err / 8);          /* -64..63: 7-bit telemetry field */
                 telem_set_line((uint8_t)((l_blk ? 0x1u : 0u) | (r_blk ? 0x2u : 0u)),
-                               (int8_t)pos, !line_err_get_lost(le));
+                               pos, !line_err_get_lost(le));
             }
 
             /* junction trigger: feed EVERY line message */
@@ -483,37 +547,18 @@ int main(void)
             }
         }
 
-        /* ---- barcode: drain edges, assemble, decode ---- */
+        /* ---- barcode: drain edges, assemble, decode ----
+           A result can come from either call: an edge only counts after
+           its 2 ms chatter check (barcode_decode.h). */
         barcode_edge_t e;
         barcode_t res;
         while (barcode_eq_pop(&g_eq, &e)) {
             if (barcode_asm_edge_arrived(&basm, e.t_us, &res)) {
-                if (barcode_eq_overflow_delta(&g_eq, &seen_dropped) != 0u) {
-                    res = barcode_invalid();
-                }
-                if (barcode_is_valid(res)) {
-                    uint8_t mv = 0;
-                    uint8_t mapped = nav_map_lookup(nav_map_snapshot(&g_nav_map),
-                                                    barcode_get_letter(res), &mv);
-                    printf("[bar] VALID '%c'%s\n", barcode_get_char(res),
-                           mapped ? "" : " (not in map)");
-                    nav_on_barcode(&nav, res);
-                    if (g_comms_ok) {
-                        telem_event_barcode(barcode_get_char(res),
-                                            mapped ? to_telem_move(mv) : TELEM_MOVE_UNMAPPED);
-                    }
-                } else {
-                    printf("[bar] INVALID (30 edges, not decodable)\n");
-                    if (g_comms_ok) { telem_event_barcode('?', TELEM_MOVE_UNMAPPED); }
-                }
+                on_barcode_result(&basm, res, &nav, &seen_dropped);
             }
         }
-        {
-            uint32_t n = basm.count;
-            if (barcode_asm_time_passed(&basm, time_us_32(), &res)) {
-                (void)barcode_eq_overflow_delta(&g_eq, &seen_dropped);
-                printf("[bar] INVALID (partial: %lu of 30 edges)\n", (unsigned long)n);
-            }
+        if (barcode_asm_time_passed(&basm, time_us_32(), &res)) {
+            on_barcode_result(&basm, res, &nav, &seen_dropped);
         }
 
         /* ---- status line, 2 Hz ---- */

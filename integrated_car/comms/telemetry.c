@@ -1,15 +1,17 @@
 /**
  * @file    telemetry.c
- * @brief   Snapshot + event-queue telemetry, and the barcode-map hand-off
- *          to Buddy 3's nav_map_apply().
+ * @brief   Packed snapshot + event-queue telemetry, and the barcode-map
+ *          hand-off to Buddy 3's nav_map_apply().
  *
- * Payloads: event/barcode and event/junction are 1 packed byte (Change
- * Requirement 1); the older topics are still compact JSON until the
- * data-layout table is agreed (see MQTT_DOCUMENTATION.md).
+ * Change Requirement 1: every payload is packed with masks and shifts
+ * (packets.h). The live snapshot is kept packed in RAM (12 bytes) and each
+ * setter writes only its own fields; only this task touches it, so the
+ * read-modify-writes cannot race.
  */
 #include "telemetry.h"
 #include "comms.h"
 #include "comms_config.h"
+#include "packets.h"
 #include "nav_cmd.h"              /* Buddy 3: nav_map_t, nav_map_apply() */
 
 #include <stdio.h>
@@ -27,47 +29,47 @@ extern nav_map_t g_nav_map;
 /* Private definitions                                                     */
 /* ---------------------------------------------------------------------- */
 #define EVENT_QUEUE_LEN     (8u)      /* power of two */
-#define EVENT_PAYLOAD_LEN   (176u)
-#define EVENT_TOPIC_LEN     (24u)
+#define EVENT_PAYLOAD_MAX   (PKT_EV_OBST_LEN)   /* largest event: 6 bytes */
 #define EVENTS_PER_POLL     (2u)      /* bound the work done per loop */
+#define WIFI_LOSS_SHOW_MS   (5000u)   /* keep the WiFi-loss bit this long */
 
-#define LETTER_MASK         (0x1Fu)   /* bits 0-4 of the event byte */
-#define MOVE_SHIFT          (5u)      /* bits 5-7 of the event byte */
+typedef enum
+{
+    EV_STATE = 0,
+    EV_BARCODE,
+    EV_JUNCTION,
+    EV_HUMP,
+    EV_OBSTACLE,
+    EV_KINDS
+} ev_kind_t;
+
+static char const * const g_ev_topics[EV_KINDS] =
+{
+    "event/state", "event/barcode", "event/junction", "event/hump", "event/obstacle"
+};
 
 typedef struct
 {
-    char     subtopic[EVENT_TOPIC_LEN];
-    uint16_t len;                       /* payload bytes (binary or text) */
-    uint8_t  payload[EVENT_PAYLOAD_LEN];
+    uint8_t kind;                       /* ev_kind_t                      */
+    uint8_t len;                        /* payload bytes                  */
+    uint8_t payload[EVENT_PAYLOAD_MAX];
 } telem_event_t;
-
-typedef struct
-{
-    robot_state_t state;
-    float         speed_l_cms;
-    float         speed_r_cms;
-    int32_t       enc_l;
-    int32_t       enc_r;
-    float         distance_cm;
-    uint8_t       line_bits;
-    int8_t        line_pos;
-    bool          b_on_line;
-    float         pitch_deg;
-    float         yaw_rate_dps;
-    imu_event_t   imu_event;
-    float         hump_peak_cm;     /* highest hump seen this run */
-} telem_snapshot_t;
 
 /* ---------------------------------------------------------------------- */
 /* Module state                                                            */
 /* ---------------------------------------------------------------------- */
-static telem_snapshot_t g_snap;
-static telem_event_t    g_events[EVENT_QUEUE_LEN];
-static uint32_t         g_ev_head = 0u;
-static uint32_t         g_ev_tail = 0u;
-static uint32_t         g_ev_dropped = 0u;
-static uint32_t         g_live_seq = 0u;
-static uint32_t         g_next_live_ms = 0u;
+static uint8_t       g_live[PKT_LIVE_LEN];  /* live snapshot, kept packed */
+static uint8_t       g_odom[PKT_ODOM_LEN];  /* encoder counts, kept packed */
+static telem_event_t g_events[EVENT_QUEUE_LEN];
+static uint32_t      g_ev_head = 0u;
+static uint32_t      g_ev_tail = 0u;
+static uint8_t       g_live_seq = 0u;       /* wraps at 256, like its field */
+static uint32_t      g_next_live_ms = 0u;
+static uint32_t      g_next_odom_ms = 0u;
+static bool          gb_seen_online = false;
+static bool          gb_wifi_lost = false;  /* WiFi lost since it was up   */
+static bool          gb_wifi_clear_armed = false;
+static uint32_t      g_wifi_clear_ms = 0u;
 
 /* ---------------------------------------------------------------------- */
 /* Helpers                                                                 */
@@ -77,38 +79,32 @@ static uint32_t now_ms(void)
     return to_ms_since_boot(get_absolute_time());
 }
 
-/* Queue an event of len bytes; if full, the OLDEST event is overwritten. */
-static void event_push_bin(char const * p_subtopic, void const * p_data,
-                           uint16_t len)
+static bool reached(uint32_t t)
+{
+    return ((int32_t)(now_ms() - t) >= 0);
+}
+
+/* Queue an event; if full, the OLDEST event is overwritten and counted. */
+static void event_push(ev_kind_t kind, uint8_t const * p_data, uint8_t len)
 {
     telem_event_t * p_ev;
 
-    if (len > EVENT_PAYLOAD_LEN)
+    if (len > EVENT_PAYLOAD_MAX)
     {
-        len = EVENT_PAYLOAD_LEN;
+        len = EVENT_PAYLOAD_MAX;
     }
 
     if ((g_ev_head - g_ev_tail) >= EVENT_QUEUE_LEN)
     {
         g_ev_tail++;
-        g_ev_dropped++;
+        comms_note_event_dropped();
     }
 
     p_ev = &g_events[g_ev_head & (EVENT_QUEUE_LEN - 1u)];
-    (void)snprintf(p_ev->subtopic, sizeof(p_ev->subtopic), "%s", p_subtopic);
+    p_ev->kind = (uint8_t)kind;
+    p_ev->len  = len;
     memcpy(p_ev->payload, p_data, len);
-    p_ev->len = len;
     g_ev_head++;
-}
-
-/* Queue a text event (JSON or plain text; callers build it in a buffer of
- * at most EVENT_PAYLOAD_LEN bytes, and event_push_bin() clamps anyway). */
-static void event_push(char const * p_subtopic, char const * p_payload)
-{
-    size_t len = strlen(p_payload);
-
-    event_push_bin(p_subtopic, p_payload,
-                   (len > EVENT_PAYLOAD_LEN) ? (uint16_t)EVENT_PAYLOAD_LEN : (uint16_t)len);
 }
 
 /* Runs inside comms_poll() - the Telemetry task, never the lwIP callback -
@@ -139,26 +135,23 @@ static uint8_t apply_barcode_map(uint8_t const * p_payload, uint16_t len)
     return status;
 }
 
+/* 12 bytes: the packed snapshot plus a sequence number, with the WiFi-loss
+ * bit added to Mission Control's fault mask. */
 static void publish_live(void)
 {
-    char payload[384];
+    uint8_t  msg[PKT_LIVE_LEN];
+    uint32_t faults;
 
-    (void)snprintf(payload, sizeof(payload),
-        "{\"seq\":%lu,\"t\":%lu,\"state\":\"%s\","
-        "\"mot\":{\"vl\":%.1f,\"vr\":%.1f,\"el\":%ld,\"er\":%ld,\"dist\":%.1f},"
-        "\"line\":{\"bits\":%u,\"pos\":%d,\"on\":%d},"
-        "\"imu\":{\"pitch\":%.1f,\"yaw\":%.1f,\"ev\":\"%s\",\"peak\":%.2f},"
-        "\"ev_drop\":%lu}",
-        (unsigned long)g_live_seq++, (unsigned long)now_ms(),
-        telem_state_name(g_snap.state),
-        (double)g_snap.speed_l_cms, (double)g_snap.speed_r_cms,
-        (long)g_snap.enc_l, (long)g_snap.enc_r, (double)g_snap.distance_cm,
-        (unsigned)g_snap.line_bits, (int)g_snap.line_pos, g_snap.b_on_line ? 1 : 0,
-        (double)g_snap.pitch_deg, (double)g_snap.yaw_rate_dps,
-        telem_imu_name(g_snap.imu_event), (double)g_snap.hump_peak_cm,
-        (unsigned long)g_ev_dropped);
+    memcpy(msg, g_live, sizeof(msg));
+    pkt_put(msg, PKT_LIVE_SEQ, g_live_seq++);
+    faults = pkt_get(msg, PKT_LIVE_FAULTS);
+    if (gb_wifi_lost)
+    {
+        faults |= TELEM_FAULT_WIFI_LOSS;
+    }
+    pkt_put(msg, PKT_LIVE_FAULTS, faults);
 
-    (void)comms_publish("telemetry/live", payload, 0u, false);
+    (void)comms_publish("telemetry/live", msg, PKT_LIVE_LEN, 0u, false);
 }
 
 static void flush_events(void)
@@ -169,7 +162,7 @@ static void flush_events(void)
     {
         telem_event_t const * p_ev = &g_events[g_ev_tail & (EVENT_QUEUE_LEN - 1u)];
 
-        if (!comms_publish_bin(p_ev->subtopic, p_ev->payload, p_ev->len, 1u, false))
+        if (!comms_publish(g_ev_topics[p_ev->kind], p_ev->payload, p_ev->len, 1u, false))
         {
             break;          /* buffer full or link dropped: try next poll */
         }
@@ -178,81 +171,164 @@ static void flush_events(void)
     }
 }
 
+/* WiFi loss is a report-only fault: set while WiFi itself is down after
+ * having been up (a broker restart alone does not count), and kept for
+ * WIFI_LOSS_SHOW_MS once the link is back, because live data can only reach
+ * the laptop while the link is up. */
+static void track_wifi_loss(comms_link_t link)
+{
+    if ((link == COMMS_WIFI_DOWN) || (link == COMMS_WIFI_JOINING))
+    {
+        if (gb_seen_online)
+        {
+            gb_wifi_lost = true;
+        }
+        gb_wifi_clear_armed = false;
+        return;
+    }
+    if (link != COMMS_ONLINE)
+    {
+        return;                         /* WiFi up, broker not yet: wait */
+    }
+
+    gb_seen_online = true;
+    if (gb_wifi_lost)
+    {
+        if (!gb_wifi_clear_armed)
+        {
+            g_wifi_clear_ms = now_ms() + WIFI_LOSS_SHOW_MS;
+            gb_wifi_clear_armed = true;
+        }
+        else if (reached(g_wifi_clear_ms))
+        {
+            gb_wifi_lost = false;
+            gb_wifi_clear_armed = false;
+        }
+        else
+        {
+            /* still showing it */
+        }
+    }
+}
+
 /* ---------------------------------------------------------------------- */
 /* Public API                                                              */
 /* ---------------------------------------------------------------------- */
 void telem_init(void)
 {
-    memset(&g_snap, 0, sizeof(g_snap));
-    g_snap.state     = ROBOT_IDLE;
-    g_snap.imu_event = IMU_STATIONARY;
+    memset(g_live, 0, sizeof(g_live));      /* state IDLE, STATIONARY, all 0 */
+    memset(g_odom, 0, sizeof(g_odom));
     g_ev_head = 0u;
     g_ev_tail = 0u;
+    g_live_seq = 0u;
     g_next_live_ms = now_ms();
+    g_next_odom_ms = g_next_live_ms;
+    gb_seen_online = false;
+    gb_wifi_lost = false;
+    gb_wifi_clear_armed = false;
     comms_set_map_handler(apply_barcode_map);
 }
 
 void telem_poll(void)
 {
-    if (!comms_is_online())
+    bool b_online = comms_is_online();
+
+    track_wifi_loss(comms_get_link());
+
+    if (!b_online)
     {
         /* Live data is not buffered: stale positions are useless.
          * Events stay queued until we are back online. */
         g_next_live_ms = now_ms();
+        g_next_odom_ms = g_next_live_ms;
         return;
     }
 
     flush_events();
 
-    if ((int32_t)(now_ms() - g_next_live_ms) >= 0)
+    if (reached(g_next_live_ms))
     {
         g_next_live_ms += TELEM_PERIOD_MS;
         publish_live();
+    }
+    if (reached(g_next_odom_ms))
+    {
+        g_next_odom_ms += ODOM_PERIOD_MS;
+        (void)comms_publish("telemetry/odometry", g_odom, PKT_ODOM_LEN, 0u, false);
     }
 }
 
 void telem_set_state(robot_state_t state)
 {
-    if (state != g_snap.state)
+    uint32_t old_state = pkt_get(g_live, PKT_LIVE_STATE);
+    uint32_t new_state = pkt_sat((uint32_t)state, PKT_LIVE_STATE);
+
+    if (new_state != old_state)
     {
-        char payload[80];
-        (void)snprintf(payload, sizeof(payload),
-                       "{\"t\":%lu,\"from\":\"%s\",\"to\":\"%s\"}",
-                       (unsigned long)now_ms(), telem_state_name(g_snap.state),
-                       telem_state_name(state));
-        g_snap.state = state;
-        event_push("event/state", payload);
+        uint8_t ev = 0u;
+
+        pkt_put(&ev, PKT_EV_STATE_FROM, old_state);
+        pkt_put(&ev, PKT_EV_STATE_TO, new_state);
+        pkt_put(g_live, PKT_LIVE_STATE, new_state);
+        event_push(EV_STATE, &ev, PKT_EV_STATE_LEN);
     }
 }
 
 void telem_set_motion(float speed_l_cms, float speed_r_cms,
                       int32_t enc_l, int32_t enc_r, float distance_cm)
 {
-    g_snap.speed_l_cms = speed_l_cms;
-    g_snap.speed_r_cms = speed_r_cms;
-    g_snap.enc_l       = enc_l;
-    g_snap.enc_r       = enc_r;
-    g_snap.distance_cm = distance_cm;
+    pkt_put(g_live, PKT_LIVE_SPEED_L,
+            (uint32_t)pkt_scale_s(speed_l_cms, PKT_SPEED_STEP_CMS, PKT_LIVE_SPEED_L.width));
+    pkt_put(g_live, PKT_LIVE_SPEED_R,
+            (uint32_t)pkt_scale_s(speed_r_cms, PKT_SPEED_STEP_CMS, PKT_LIVE_SPEED_R.width));
+    pkt_put(g_live, PKT_LIVE_DIST, pkt_wrap(distance_cm, PKT_DIST_STEP_CM));  /* wraps */
+    pkt_put(g_odom, PKT_ODOM_ENC_L, (uint32_t)enc_l);   /* low 16 bits, wraps */
+    pkt_put(g_odom, PKT_ODOM_ENC_R, (uint32_t)enc_r);
 }
 
-void telem_set_line(uint8_t sensor_bits, int8_t position, bool b_on_line)
+void telem_set_line(uint8_t sensor_bits, int16_t position, bool b_on_line)
 {
-    g_snap.line_bits = sensor_bits;
-    g_snap.line_pos  = position;
-    g_snap.b_on_line = b_on_line;
+    pkt_put(g_live, PKT_LIVE_LINE_BITS, sensor_bits);
+    pkt_put(g_live, PKT_LIVE_LINE_POS,
+            (uint32_t)pkt_scale_s((float)position, 1.0f, PKT_LIVE_LINE_POS.width));
+    pkt_put(g_live, PKT_LIVE_ON_LINE, b_on_line ? 1u : 0u);
 }
 
 void telem_set_imu(float pitch_deg, float yaw_rate_dps, imu_event_t event)
 {
-    g_snap.pitch_deg    = pitch_deg;
-    g_snap.yaw_rate_dps = yaw_rate_dps;
-    g_snap.imu_event    = event;
+    pkt_put(g_live, PKT_LIVE_PITCH,
+            (uint32_t)pkt_scale_s(pitch_deg, PKT_PITCH_STEP_DEG, PKT_LIVE_PITCH.width));
+    pkt_put(g_live, PKT_LIVE_YAW_RATE,
+            (uint32_t)pkt_scale_s(yaw_rate_dps, PKT_YAW_STEP_DPS, PKT_LIVE_YAW_RATE.width));
+    pkt_put(g_live, PKT_LIVE_MOTION, pkt_sat((uint32_t)event, PKT_LIVE_MOTION));
+}
+
+void telem_set_faults(uint16_t fault_mask)
+{
+    pkt_put(g_live, PKT_LIVE_FAULTS, fault_mask);
+}
+
+bool telem_wifi_lost(void)
+{
+    return gb_wifi_lost;
+}
+
+/* Obstacle distances: whole cm, 255 = out of range. Negative (a "no echo"
+ * sentinel such as -1) and NaN also mean out of range, never "touching". */
+static uint32_t obstacle_cm(float cm, pkt_field_t field)
+{
+    if (!(cm >= 0.0f))                  /* negative or NaN */
+    {
+        return pkt_max(field);
+    }
+    return pkt_scale_u(cm, PKT_OBST_STEP_CM, pkt_max(field));
 }
 
 uint8_t telem_pack_letter_move(char letter, telem_move_t move)
 {
-    uint32_t idx = TELEM_LETTER_NONE;
-    uint32_t mv  = (uint32_t)move;
+    uint8_t  byte = 0u;
+    uint32_t idx  = TELEM_LETTER_NONE;
+    uint32_t mv   = (uint32_t)move;
 
     if ((letter >= 'A') && (letter <= 'Z'))
     {
@@ -271,70 +347,63 @@ uint8_t telem_pack_letter_move(char letter, telem_move_t move)
     {
         mv = (uint32_t)TELEM_MOVE_UNMAPPED;
     }
-    return (uint8_t)((idx & LETTER_MASK) | (mv << MOVE_SHIFT));
+    pkt_put(&byte, PKT_EV_LETTER, idx);
+    pkt_put(&byte, PKT_EV_MOVE, mv);
+    return byte;
 }
 
 void telem_event_barcode(char letter, telem_move_t move)
 {
     uint8_t byte = telem_pack_letter_move(letter, move);
-    event_push_bin("event/barcode", &byte, 1u);
+    event_push(EV_BARCODE, &byte, PKT_EV_LM_LEN);
 }
 
 void telem_event_junction(char letter, telem_move_t move)
 {
     uint8_t byte = telem_pack_letter_move(letter, move);
-    event_push_bin("event/junction", &byte, 1u);
+    event_push(EV_JUNCTION, &byte, PKT_EV_LM_LEN);
 }
 
 void telem_event_hump(float peak_cm)
 {
-    char payload[96];
+    uint8_t  ev[PKT_EV_HUMP_LEN];
+    uint32_t peak = pkt_scale_u(peak_cm, PKT_PEAK_STEP_CM, pkt_max(PKT_EV_HUMP_PEAK));
 
-    if (peak_cm > g_snap.hump_peak_cm)
+    if (peak > pkt_get(g_live, PKT_LIVE_PEAK))
     {
-        g_snap.hump_peak_cm = peak_cm;
+        pkt_put(g_live, PKT_LIVE_PEAK, peak);           /* highest this run */
     }
-    (void)snprintf(payload, sizeof(payload),
-                   "{\"t\":%lu,\"peak\":%.2f,\"max\":%.2f,\"dist\":%.1f}",
-                   (unsigned long)now_ms(), (double)peak_cm,
-                   (double)g_snap.hump_peak_cm, (double)g_snap.distance_cm);
-    event_push("event/hump", payload);
+
+    memset(ev, 0, sizeof(ev));
+    pkt_put(ev, PKT_EV_HUMP_PEAK, peak);
+    pkt_put(ev, PKT_EV_HUMP_DIST, pkt_get(g_live, PKT_LIVE_DIST));
+    event_push(EV_HUMP, ev, PKT_EV_HUMP_LEN);
 }
 
 void telem_event_obstacle(obstacle_profile_t const * p_profile)
 {
-    char payload[EVENT_PAYLOAD_LEN];
+    uint8_t ev[PKT_EV_OBST_LEN];
 
     if (p_profile == NULL)
     {
         return;
     }
-    (void)snprintf(payload, sizeof(payload),
-        "{\"t\":%lu,\"d\":%.1f,\"ang\":%.0f,\"w\":%.1f,"
-        "\"cl\":%.1f,\"cr\":%.1f,\"act\":\"%s\"}",
-        (unsigned long)now_ms(), (double)p_profile->distance_cm,
-        (double)p_profile->angle_deg, (double)p_profile->width_cm,
-        (double)p_profile->clear_left_cm, (double)p_profile->clear_right_cm,
-        telem_avoid_name(p_profile->action));
-    event_push("event/obstacle", payload);
-}
 
-void telem_log(char const * p_text)
-{
-    char payload[EVENT_PAYLOAD_LEN];
-
-    if (p_text == NULL)
-    {
-        return;
-    }
-    /* Plain text, truncated. Avoid quotes in log text. */
-    (void)snprintf(payload, sizeof(payload), "%s", p_text);
-    event_push("log", payload);
+    memset(ev, 0, sizeof(ev));
+    pkt_put(ev, PKT_EV_OBST_DIST, obstacle_cm(p_profile->distance_cm, PKT_EV_OBST_DIST));
+    pkt_put(ev, PKT_EV_OBST_ANGLE,
+            pkt_scale_u(p_profile->angle_deg, PKT_ANGLE_STEP_DEG, pkt_max(PKT_EV_OBST_ANGLE)));
+    pkt_put(ev, PKT_EV_OBST_WIDTH,
+            pkt_scale_u(p_profile->width_cm, PKT_OBST_STEP_CM, pkt_max(PKT_EV_OBST_WIDTH)));
+    pkt_put(ev, PKT_EV_OBST_CLEAR_L, obstacle_cm(p_profile->clear_left_cm, PKT_EV_OBST_CLEAR_L));
+    pkt_put(ev, PKT_EV_OBST_CLEAR_R, obstacle_cm(p_profile->clear_right_cm, PKT_EV_OBST_CLEAR_R));
+    pkt_put(ev, PKT_EV_OBST_ACTION, pkt_sat((uint32_t)p_profile->action, PKT_EV_OBST_ACTION));
+    event_push(EV_OBSTACLE, ev, PKT_EV_OBST_LEN);
 }
 
 void telem_reset_peak(void)
 {
-    g_snap.hump_peak_cm = 0.0f;
+    pkt_put(g_live, PKT_LIVE_PEAK, 0u);
 }
 
 /* ---------------------------------------------------------------------- */

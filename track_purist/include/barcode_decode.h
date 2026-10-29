@@ -50,18 +50,54 @@ extern "C" {
 #define BARCODE_FRAME_TIMEOUT_MS 20u  /* poll period; keeps heartbeat alive */
 
 /*
- * Quiet timeout: if no new edge arrives for this long while a frame is
- * partially assembled, the partial frame is abandoned and reported
- * INVALID once. It must exceed the longest gap between two edges of a
- * valid barcode at the slowest supported run speed.
+ * Size- and speed-independent decoding. No rule below uses an absolute
+ * bar width, so the barcode may be printed at any size up to A4 and
+ * scanned by the car or by hand at any steady speed.
  *
- * Slowest supported speed ~0.1 m/s. A wide bar is ~9 mm, so the longest
- * single element lasts ~9 mm / 100 mm/s = ~90 ms. 150 ms leaves margin
- * above that worst-case element while still abandoning a truly stalled
- * read quickly. Re-tune against measured traversal time on the real
- * track (open item A2).
+ * Chatter (pulse-pair cancellation): two edges less than
+ * BARCODE_CHATTER_US apart are a glitch, not a bar, and BOTH are dropped
+ * (a lone dropped edge would swap every later bar and space). At the
+ * fastest supported scan, 0.3 m/s, the narrowest real element is a
+ * 1.5 mm bar (half-size print) = 5 ms, and the spec 3 mm bar = 10 ms,
+ * so 2 ms never touches a real element. Every edge waits up to 2 ms
+ * for this check before it counts.
  */
-#define BARCODE_QUIET_TIMEOUT_MS 150u
+#define BARCODE_CHATTER_US       2000u
+
+/*
+ * Abort rule for a partial frame: give up when the current gap exceeds
+ * BARCODE_ABORT_FACTOR x the longest element in the frame, clamped to
+ * [FLOOR, CAP]. With no element yet (0 or 1 edge) the CAP applies.
+ * 6x: a wide element is 3x a narrow one, so after only narrow elements
+ * the next (wide) one may still slow by 2x before the read is dropped.
+ * 150 ms floor: a fast scan of noise is dropped quickly but not before
+ *   a slow-start element can arrive.
+ * 2 s cap: the longest pause allowed inside a barcode (slow hand scan).
+ * The abort is only a safety net: a frame is decoded on its 30th edge.
+ */
+#define BARCODE_ABORT_FACTOR     6u
+#define BARCODE_ABORT_FLOOR_US   150000u
+#define BARCODE_ABORT_CAP_US     2000000u
+
+/*
+ * Wide/narrow split: in each character the 3 widest elements are wide.
+ * The split is accepted only if the narrowest wide element is at least
+ * 1.5x the widest narrow one (spec bars are 3:1, so this still holds with
+ * a +/-20% speed change inside one character: 2.4 / 1.2 = 2.0). The two
+ * inter-character gaps must pass the same test as narrow elements: the
+ * narrowest wide element of BOTH neighbouring characters must be at
+ * least 1.5x the gap. Anything else is INVALID, never a guess.
+ */
+#define BARCODE_SPLIT_RATIO_NUM  3u   /* 1.5 = 3 / 2 */
+#define BARCODE_SPLIT_RATIO_DEN  2u
+
+/** Why the assembler produced its last result (debug print). */
+typedef enum {
+    BARCODE_OUT_NONE = 0,     /* no result yet                           */
+    BARCODE_OUT_VALID,        /* 30-edge window decoded                   */
+    BARCODE_OUT_PARTIAL,      /* went quiet with fewer than 30 edges      */
+    BARCODE_OUT_UNDECODABLE   /* went quiet; 30+ edges, no window decoded */
+} barcode_outcome_t;
 
 /**
  * One captured edge: a timestamp only. The ISR pushes these; it performs
@@ -105,41 +141,83 @@ uint32_t barcode_edges_to_widths(const barcode_edge_t *edges, uint32_t n_edges,
  *   barcode_asm_time_passed(a, now_us) - no edge; current time is now_us
  *
  * Each call may produce at most one result (valid or invalid) via *out.
- * The real task (barcode_decode_task) is a thin loop around these two
- * calls plus the RTOS plumbing (queue pop, heartbeat, fault flag).
+ * BOTH calls can produce a VALID result: an edge only counts once the
+ * 2 ms chatter check has passed (by the next edge or by time_passed),
+ * so the caller must call time_passed regularly (every <= 20 ms).
+ *
+ * Rules (numbers in the defines above):
+ *  1. Chatter: an edge < BARCODE_CHATTER_US after the previous pending
+ *     edge cancels both of them (pulse-pair cancellation).
+ *  2. Rolling window: the last 30 accepted edges are kept. Every accepted
+ *     edge from the 30th on tries to decode the window; stray edges
+ *     before a barcode slide out instead of shifting it for good.
+ *     A failed window is NOT reported (the next edge may fix it).
+ *  3. Decode: the first window that decodes VALID is reported and the
+ *     window is cleared.
+ *  4. Abort: on a gap longer than the adaptive timeout the window is
+ *     reported INVALID once and cleared.
  *
  * The caller still owns overflow handling: on a detected queue overflow
  * it should force INVALID. The assembler itself never touches the queue.
  */
 typedef struct {
-    uint32_t edges[BARCODE_FRAME_EDGES];
-    uint32_t count;
-    uint32_t last_edge_us;
-    uint8_t  have_edge;        /* 1 once at least one edge is buffered */
-    uint32_t quiet_timeout_us; /* abandon partial frame after this silence */
+    uint32_t edges[BARCODE_FRAME_EDGES]; /* accepted edges, oldest first   */
+    uint32_t pending_us;      /* newest edge, waiting for the chatter check */
+    uint32_t last_edge_us;    /* time of the newest raw edge (abort timer)  */
+    uint16_t burst_edges;     /* accepted edges since the last result       */
+    uint16_t chatter_pairs;   /* pulse pairs cancelled since the last result */
+    uint16_t last_burst_edges;   /* the same two, frozen at the last result */
+    uint16_t last_chatter_pairs;
+    uint8_t  count;           /* accepted edges in the window, 0..30        */
+    uint8_t  have_pending;    /* 1 = pending_us holds an edge               */
+    uint8_t  last_count;      /* edges in the window at the last result     */
+    uint8_t  last_outcome;    /* barcode_outcome_t of the last result       */
 } barcode_asm_t;
 
-/** Initialise the assembler. quiet_timeout_us defaults applied if 0. */
+/** Initialise (or reset) the assembler: empty window, nothing pending. */
 void barcode_asm_init(barcode_asm_t *a);
 
 /**
- * Feed one captured edge. If this completes a full frame (30th edge),
- * writes the decoded result to *out and returns 1; otherwise returns 0.
+ * Feed one captured edge. May accept the previous pending edge, which can
+ * complete a decodable 30-edge window: then writes *out and returns 1.
+ * Otherwise returns 0.
  */
 uint8_t barcode_asm_edge_arrived(barcode_asm_t *a, uint32_t t_us, barcode_t *out);
 
 /**
- * Advance time with no edge. If a partial frame has gone quiet longer
- * than quiet_timeout_us, writes INVALID to *out, resets, and returns 1;
- * otherwise returns 0.
+ * Advance time with no edge. Accepts a pending edge once it is
+ * BARCODE_CHATTER_US old (this can produce a VALID result), or abandons a
+ * partial frame that has gone quiet longer than the adaptive timeout
+ * (INVALID, reported once). Writes *out and returns 1 if either happened.
  */
 uint8_t barcode_asm_time_passed(barcode_asm_t *a, uint32_t now_us, barcode_t *out);
 
+/** Current adaptive abort timeout in microseconds (rule 4). */
+uint32_t barcode_asm_abort_timeout_us(const barcode_asm_t *a);
+
+/** Snapshot of the window behind the last result, for the debug print. */
+typedef struct {
+    uint32_t widths_us[BARCODE_FRAME_ELEMENTS];
+    uint32_t longest_us;      /* longest element in the window            */
+    uint16_t burst_edges;     /* edges accepted in this burst (may be > 30) */
+    uint16_t chatter_pairs;   /* glitch pulses cancelled in this burst    */
+    uint8_t  n_edges;         /* edges in the window (30 when VALID)      */
+    uint8_t  n_widths;        /* n_edges - 1, at most 29                  */
+    uint8_t  outcome;         /* barcode_outcome_t                        */
+} barcode_frame_info_t;
+
+/**
+ * Fill *p_info with the window that produced the last result. Call it
+ * straight after edge_arrived/time_passed returned 1: the next accepted
+ * edge overwrites the window. Uses only the caller's buffer.
+ */
+void barcode_asm_last_frame(const barcode_asm_t *a, barcode_frame_info_t *p_info);
+
 /**
  * Classify the 9 elements of a single character into a 9-bit wide/narrow
- * pattern (MSB = first element). "Wide" = the 3 widest of the 9 elements.
- * Returns 1 on success (exactly 3 wide), 0 if the pattern is ambiguous
- * (cannot pick exactly 3 wide cleanly) -> caller treats as INVALID.
+ * pattern (MSB = first element). The 3 widest elements are wide; the
+ * split must be clean (narrowest wide >= 1.5 x widest narrow).
+ * Returns 1 on success, 0 if ambiguous -> caller treats as INVALID.
  */
 uint8_t barcode_classify_char(const uint32_t elems[BARCODE_CHAR_ELEMENTS],
                               uint16_t *pattern9);

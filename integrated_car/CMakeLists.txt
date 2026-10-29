@@ -1,6 +1,6 @@
 # Integrated car firmware (bare metal, no uT-Kernel):
-#   Buddy 3 track_purist (from the team repo) + Buddy 1 robocar_comms v0.2
-#   (copied into comms/) + motor.c.
+#   Buddy 3 track_purist (from the team repo) + Buddy 1 robocar_comms v0.3.1
+#   (copied into comms/, packed-binary MQTT) + motor.c.
 
 cmake_minimum_required(VERSION 3.13)
 
@@ -52,6 +52,7 @@ set(OWN_SOURCES
     motor.c
     comms/comms.c
     comms/telemetry.c
+    comms/packets.c
 )
 set(TP_SOURCES
     ${TRACK_PURIST_DIR}/src/line_follow.c

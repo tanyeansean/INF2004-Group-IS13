@@ -74,9 +74,13 @@ static void barcode_ir_isr(uint gpio, uint32_t events)
 }
 #endif
 
-/* Hand-sweep testing: allow up to this long between two bars before a
-   partial read is abandoned (the car itself uses 150 ms). */
-#define HAND_TEST_QUIET_MS 1000u
+/* 1 = after every barcode result print the window edge count, edges in the
+   burst, glitch pulses cancelled, longest element and all widths in ms.
+   The decoder adapts to print size and hand/car speed by itself (no
+   hand-test timeout needed any more). */
+#ifndef BARCODE_DEBUG
+#define BARCODE_DEBUG 1
+#endif
 
 /* ---- Calibration helpers ---- */
 static void countdown(const char *msg)
@@ -201,9 +205,7 @@ int main(void)
 #if ENABLE_BARCODE
     barcode_asm_t basm;
     barcode_asm_init(&basm);
-    basm.quiet_timeout_us = HAND_TEST_QUIET_MS * 1000u;
-    printf("Barcode hand test: up to %u ms allowed between bars. Watch bc=0/1 flip on each bar.\n",
-           HAND_TEST_QUIET_MS);
+    printf("Barcode: any print size up to A4, any steady speed. Watch bc=0/1 flip on each bar.\n");
     uint8_t seen_dropped = 0;
     (void)barcode_eq_overflow_delta(&g_eq, &seen_dropped);
 #endif
@@ -311,37 +313,40 @@ int main(void)
         /* ----- barcode ----- */
         barcode_edge_t e;
         barcode_t result;
-        while (barcode_eq_pop(&g_eq, &e)) {
-            if (barcode_asm_edge_arrived(&basm, e.t_us, &result)) {
-                if (barcode_eq_overflow_delta(&g_eq, &seen_dropped) != 0) {
-                    result = barcode_invalid();
-                }
-                if (barcode_is_valid(result)) {
-                    printf(">>> BARCODE: VALID '%c' stored, waiting for junction\n", barcode_get_char(result));
-                    nav_on_barcode(&nav, result);
-                } else {
-                    /* all 30 edges seen but not decodable: show the 29
-                       widths (ms) so we can see what the sensor measured */
-                    printf(">>> BARCODE: INVALID (30 edges, could not decode). widths ms:");
-                    for (uint32_t i = 0; i + 1 < BARCODE_FRAME_EDGES; i++) {
-                        printf(" %lu", (unsigned long)((basm.edges[i + 1] - basm.edges[i]) / 1000u));
-                    }
-                    printf("\n");
-                }
-            }
+        uint8_t got = 0;
+        while (!got && barcode_eq_pop(&g_eq, &e)) {
+            got = barcode_asm_edge_arrived(&basm, e.t_us, &result);
         }
-        /* abandon a stalled partial frame after quiet time */
-        {
-            uint32_t n_edges = basm.count; /* read before time_passed resets it */
-            if (barcode_asm_time_passed(&basm, time_us_32(), &result)) {
-                (void)barcode_eq_overflow_delta(&g_eq, &seen_dropped);
-                printf(">>> BARCODE: INVALID (partial/timeout) - got %lu of 30 edges. widths ms:",
-                       (unsigned long)n_edges);
-                for (uint32_t i = 0; i + 1 < n_edges && i + 1 < BARCODE_FRAME_EDGES; i++) {
-                    printf(" %lu", (unsigned long)((basm.edges[i + 1] - basm.edges[i]) / 1000u));
-                }
-                printf("\n");
+        if (!got) {
+            /* accepts a pending edge after 2 ms, or abandons a quiet frame */
+            got = barcode_asm_time_passed(&basm, time_us_32(), &result);
+        }
+        if (got) {
+            barcode_frame_info_t info;
+            barcode_asm_last_frame(&basm, &info);
+            if (barcode_eq_overflow_delta(&g_eq, &seen_dropped) != 0) {
+                result = barcode_invalid();
             }
+            if (barcode_is_valid(result)) {
+                printf(">>> BARCODE: VALID '%c' stored, waiting for junction\n", barcode_get_char(result));
+                nav_on_barcode(&nav, result);
+            } else if (info.outcome == BARCODE_OUT_PARTIAL) {
+                printf(">>> BARCODE: INVALID (partial) - got %u of 30 edges\n", (unsigned)info.n_edges);
+            } else {
+                printf(">>> BARCODE: INVALID - %u edges, no 30-edge window decoded\n",
+                       (unsigned)info.burst_edges);
+            }
+#if BARCODE_DEBUG
+            printf("    dbg: edges=%u burst=%u chatter=%u longest=%lu.%lu ms widths ms:",
+                   (unsigned)info.n_edges, (unsigned)info.burst_edges, (unsigned)info.chatter_pairs,
+                   (unsigned long)(info.longest_us / 1000u),
+                   (unsigned long)((info.longest_us % 1000u) / 100u));
+            for (uint32_t i = 0; i < info.n_widths; i++) {
+                printf(" %lu.%lu", (unsigned long)(info.widths_us[i] / 1000u),
+                       (unsigned long)((info.widths_us[i] % 1000u) / 100u));
+            }
+            printf("\n");
+#endif
         }
 #endif
 

@@ -7,10 +7,16 @@
  * Two kinds of data:
  *  1. LIVE values (telem_set_*): cheap setters, no networking. Call as often
  *     as you like. The latest snapshot is published at a fixed rate
- *     (TELEM_PERIOD_MS) as one message on <root>/telemetry/live.
+ *     (TELEM_PERIOD_MS) as one 12-byte message on <root>/telemetry/live;
+ *     encoder counts go once a second on <root>/telemetry/odometry.
  *  2. EVENTS (telem_event_*): one-off things (barcode read, junction move,
  *     hump finished, obstacle profiled). Queued and sent once, QoS 1. If WiFi
  *     is down the last few events are kept and sent when the link comes back.
+ *
+ * Every payload is packed binary (Change Requirement 1). Values are passed in
+ * here in normal units and packed with masks and shifts at the edge; the
+ * snapshot itself is kept packed. Field ranges and steps: packets.h.
+ * Debug text goes to the USB serial console (printf), never over MQTT.
  *
  * Barcode map (Buddy 3): the laptop sends which letter means LEFT, RIGHT,
  * FORWARD and U-TURN on <root>/cmd/barcode_map. telem_init() registers the
@@ -21,11 +27,14 @@
  *  - Call from main-loop / task context, NOT from an interrupt handler.
  *  - None of these functions block or touch the network directly.
  *  - Not thread-safe: call them from ONE task only. In the µT-Kernel build
- *    that is the Telemetry task; other tasks pass their data to Mission
- *    Control, which hands it to Telemetry on status_q.
+ *    that is the Telemetry task. The snapshot is packed, so two fields can
+ *    share a byte, and a setter called from another task could undo a
+ *    write made at the same moment (a read-modify-write race). Other tasks,
+ *    Mission Control included, pass their data (fault mask too) on status_q;
+ *    the command handler already runs in the Telemetry task (comms.h).
  *
- * DRAFT CONTRACT: the enums and field lists below must be agreed with the
- * owning buddy before integration (see MQTT_DOCUMENTATION.md).
+ * DRAFT CONTRACT: the enums, ranges and field lists below must be agreed with
+ * the owning buddy before integration (see MQTT_DOCUMENTATION.md §8).
  */
 #ifndef TELEMETRY_H
 #define TELEMETRY_H
@@ -33,7 +42,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* ---- Owned by the Vehicle Controller (mission state) -------------------- */
+/* ---- Owned by Mission Control (mission state, 4 bits) ------------------- */
 typedef enum
 {
     ROBOT_IDLE = 0,
@@ -63,7 +72,14 @@ typedef enum
  * that no barcode asked for. Real letters are 0-25 ('A'-'Z').               */
 #define TELEM_LETTER_NONE   (31u)
 
-/* ---- Owned by Buddy 4 (IMU motion events) ------------------------------- */
+/* Fault mask bit set by Telemetry itself: the WiFi link was lost (not just
+ * the broker). Report-only (the car keeps driving); shown in live data for
+ * 5 s after the link is back. Mission Control's fault table owns the other
+ * bits and should keep bit 15 free (PROVISIONAL bit number); it can read the
+ * same flag with telem_wifi_lost() for its shared fault mask. */
+#define TELEM_FAULT_WIFI_LOSS   (1u << 15)
+
+/* ---- Owned by Buddy 4 (IMU motion events, 3 bits) ----------------------- */
 typedef enum
 {
     IMU_STATIONARY = 0,
@@ -86,12 +102,12 @@ typedef enum
 
 typedef struct
 {
-    float          distance_cm;     /* closest point                     */
-    float          angle_deg;       /* servo angle of closest point      */
-    float          width_cm;        /* estimated obstacle width          */
+    float          distance_cm;     /* closest point; >= 255 or < 0 = out of range */
+    float          angle_deg;       /* servo angle of closest point, 0-180  */
+    float          width_cm;        /* estimated obstacle width             */
     float          clear_left_cm;
     float          clear_right_cm;
-    avoid_action_t action;          /* planned avoidance                 */
+    avoid_action_t action;          /* planned avoidance                    */
 } obstacle_profile_t;
 
 /* ---- Lifecycle (called once / every loop by main) ----------------------- */
@@ -99,14 +115,18 @@ void telem_init(void);              /* also registers the barcode-map handler */
 void telem_poll(void);              /* publishes when due; call every loop */
 
 /* ---- LIVE setters ------------------------------------------------------- */
-void telem_set_state(robot_state_t state);               /* Vehicle Controller */
+void telem_set_state(robot_state_t state);               /* Mission Control */
 void telem_set_motion(float speed_l_cms, float speed_r_cms,
                       int32_t enc_l, int32_t enc_r,
                       float distance_cm);                 /* Buddy 2 */
-void telem_set_line(uint8_t sensor_bits, int8_t position,
-                    bool b_on_line);                      /* Buddy 3 */
+void telem_set_line(uint8_t sensor_bits, int16_t position,
+                    bool b_on_line);                      /* Buddy 3, position -64..63 */
 void telem_set_imu(float pitch_deg, float yaw_rate_dps,
                    imu_event_t event);                    /* Buddy 4 */
+void telem_set_faults(uint16_t fault_mask);               /* Mission Control, via status_q */
+
+/* True while the WiFi-loss fault is raised (see TELEM_FAULT_WIFI_LOSS). */
+bool telem_wifi_lost(void);
 
 /* ---- EVENTS ------------------------------------------------------------- */
 /* Barcode read. letter 'A'-'Z' (anything else = unreadable); move = what the
@@ -119,7 +139,6 @@ void telem_event_junction(char letter, telem_move_t move);
 
 void telem_event_hump(float peak_cm);                     /* Buddy 4 */
 void telem_event_obstacle(obstacle_profile_t const * p_profile); /* Buddy 5 */
-void telem_log(char const * p_text);                      /* anyone, short text */
 
 /* Clears the stored highest hump peak (also via the "reset_peak" command). */
 void telem_reset_peak(void);

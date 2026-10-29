@@ -1,7 +1,7 @@
 /**
  * @file    comms.c
  * @brief   WiFi + MQTT connection state machine, heartbeat, command and
- *          barcode-map intake.
+ *          barcode-map intake. Every payload is packed binary (packets.h).
  *
  * Concurrency model (pico_cyw43_arch_lwip_threadsafe_background):
  *  - The WiFi driver and lwIP run in the background: from a low-priority
@@ -16,11 +16,10 @@
  */
 #include "comms.h"
 #include "comms_config.h"
+#include "packets.h"
 
 #include <stdio.h>
 #include <string.h>
-#include <stdlib.h>
-#include <ctype.h>
 
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
@@ -33,12 +32,17 @@
 /* Private definitions                                                     */
 /* ---------------------------------------------------------------------- */
 #define TOPIC_MAX_LEN      (64u)
-#define RX_DATA_MAX        (48u)    /* bytes kept per incoming message      */
-#define CMD_MAX_LEN        (48u)    /* text commands must be shorter        */
+#define RX_DATA_MAX        (8u)     /* bytes kept per incoming message: a
+                                       map is 3, a command 1; anything longer
+                                       is cut here and still reads as the
+                                       wrong length                         */
 #define RX_QUEUE_LEN       (4u)     /* power of two                         */
 
 /* Sub-topics under MQTT_TOPIC_ROOT. */
-#define SUBTOPIC_CMD       "cmd"
+#define SUBTOPIC_STATUS    "status"                /* car -> laptop, 1 byte  */
+#define SUBTOPIC_HEARTBEAT "heartbeat"             /* car -> laptop, 9 bytes */
+#define SUBTOPIC_CMD       "cmd"                   /* laptop -> car, 1 byte  */
+#define SUBTOPIC_CMD_ACK   "cmd/ack"               /* car -> laptop, 1 byte  */
 #define SUBTOPIC_MAP       "cmd/barcode_map"       /* laptop -> car, 3 bytes */
 #define SUBTOPIC_MAP_ACK   "cmd/barcode_map/ack"   /* car -> laptop, 1 byte  */
 
@@ -52,7 +56,7 @@ typedef enum
 
 typedef enum
 {
-    RX_CMD = 1,            /* <root>/cmd: text command                    */
+    RX_CMD = 1,            /* <root>/cmd: 1-byte command                  */
     RX_MAP                 /* <root>/cmd/barcode_map: binary map          */
 } rx_kind_t;
 
@@ -79,8 +83,12 @@ static uint32_t g_next_attempt_ms = 0u;
 static uint32_t g_attempt_start_ms = 0u;
 static uint32_t g_backoff_ms = RECONNECT_MIN_MS;
 static uint32_t g_next_heartbeat_ms = 0u;
-static uint32_t g_heartbeat_seq = 0u;
+static uint8_t  g_heartbeat_seq = 0u;       /* wraps at 256, like its field */
 static bool     gb_was_online = false;
+
+/* Last Will: the 1-byte status "offline". lwIP takes the will message as a C
+ * string, which works because the byte is never 0 (the version is >= 1). */
+static char g_will_msg[2];
 
 static char g_client_id[32];
 static char g_topic_status[TOPIC_MAX_LEN];
@@ -100,11 +108,24 @@ static volatile uint32_t g_rx_tail = 0u;    /* written by main loop */
 static rx_msg_t * gp_rx_slot = NULL;
 
 /* Barcode map (main-loop context only): the last map the handler accepted,
- * reported in the heartbeat, and an ack still waiting to be sent. */
+ * reported in the heartbeat. */
 static uint8_t g_map_held[COMMS_MAP_LEN];
 static bool    gb_map_held = false;
+
+/* Acks still waiting to go out (main-loop context only). A publish can fail
+ * for a moment, e.g. while lwIP's 8 request slots are busy just after a
+ * reconnect; the ack is then retried on every online pass. Only the newest
+ * ack of each kind is kept. */
+static uint8_t g_cmd_ack = 0u;
+static bool    gb_cmd_ack_pending = false;
 static uint8_t g_map_ack = 0u;
 static bool    gb_map_ack_pending = false;
+
+/* The Last Will is a C string for lwIP, so the status byte must never be 0,
+ * and SPEED acks carry the speed, so it must stay below the error codes. */
+_Static_assert((PKT_LAYOUT_VERSION >= 1u) && (PKT_LAYOUT_VERSION <= 15u),
+               "layout version must fit 4 bits and not be 0");
+_Static_assert(CMD_SPEED_MAX_CMS < PKT_ACK_BAD_ARG, "speed cap clashes with ack codes");
 
 /* ---------------------------------------------------------------------- */
 /* Helpers                                                                 */
@@ -163,23 +184,15 @@ static void mqtt_incoming_publish_cb(void * p_arg, char const * p_topic,
     uint8_t kind = 0u;      /* 0 = not input for us */
 
     (void)p_arg;
+    (void)tot_len;          /* any length is taken: a wrong one gets an ack */
     gp_rx_slot = NULL;
 
     if (strcmp(p_topic, g_topic_cmd) == 0)
     {
-        if (tot_len < CMD_MAX_LEN)
-        {
-            kind = (uint8_t)RX_CMD;
-        }
-        else
-        {
-            g_stats.cmds_dropped++;             /* too long to be a command */
-        }
+        kind = (uint8_t)RX_CMD;
     }
     else if (strcmp(p_topic, g_topic_map) == 0)
     {
-        /* Any length is taken: nav_map_apply() judges it, so the laptop
-         * gets an ack even for a wrong payload. */
         kind = (uint8_t)RX_MAP;
     }
     else
@@ -214,8 +227,8 @@ static void mqtt_incoming_data_cb(void * p_arg, u8_t const * p_data,
         return;
     }
 
-    /* Keep what fits. A map longer than RX_DATA_MAX is cut short, which
-     * nav_map_apply() still rejects as the wrong length. */
+    /* Keep what fits. A message longer than RX_DATA_MAX is cut short, which
+     * still reads as the wrong length. */
     room = RX_DATA_MAX - (uint32_t)gp_rx_slot->len;
     if (len > room)
     {
@@ -274,7 +287,7 @@ static void mqtt_start_connect(void)
     ci.client_id   = g_client_id;
     ci.keep_alive  = MQTT_KEEPALIVE_S;
     ci.will_topic  = g_topic_status;   /* broker publishes this if we vanish */
-    ci.will_msg    = "offline";
+    ci.will_msg    = g_will_msg;       /* status byte "offline"              */
     ci.will_qos    = 1u;
     ci.will_retain = 1u;
 
@@ -314,7 +327,13 @@ static void on_online(void)
     (void)mqtt_subscribe(gp_mqtt, g_topic_map, 1u, mqtt_sub_cb, NULL);
     cyw43_arch_lwip_end();
 
-    (void)comms_publish("status", "online", 1u, true);
+    {
+        uint8_t status = 0u;
+
+        pkt_put(&status, PKT_STATUS_ONLINE, 1u);
+        pkt_put(&status, PKT_STATUS_VERSION, PKT_LAYOUT_VERSION);
+        (void)comms_publish(SUBTOPIC_STATUS, &status, PKT_STATUS_LEN, 1u, true);
+    }
     printf("[comms] ONLINE, listening on %s and %s\n", g_topic_cmd, g_topic_map);
 }
 
@@ -330,116 +349,121 @@ static void go_offline(char const * p_reason)
 /* ---------------------------------------------------------------------- */
 /* Heartbeat and commands                                                  */
 /* ---------------------------------------------------------------------- */
+/* Heartbeat: 9 packed bytes (packets.h). Counters are sent saturated. */
 static void send_heartbeat(void)
 {
-    char    payload[224];
-    char    map_hex[2u * COMMS_MAP_LEN + 1u] = "";
-    int32_t rssi = 0;
+    uint8_t  hb[PKT_HB_LEN];
+    int32_t  rssi = 0;
+    uint32_t minus_dbm;
 
     (void)cyw43_wifi_get_rssi(&cyw43_state, &rssi);
+    minus_dbm = (rssi >= 0) ? 0u : (uint32_t)(-rssi);
 
+    memset(hb, 0, sizeof(hb));
+    pkt_put(hb, PKT_HB_SEQ,        g_heartbeat_seq++);
+    pkt_put(hb, PKT_HB_UPTIME,     pkt_sat(now_ms() / 1000u, PKT_HB_UPTIME));
+    pkt_put(hb, PKT_HB_RSSI,       pkt_sat(minus_dbm, PKT_HB_RSSI));
+    pkt_put(hb, PKT_HB_RECONNECTS, pkt_sat(g_stats.reconnects, PKT_HB_RECONNECTS));
+    pkt_put(hb, PKT_HB_PUB_FAIL,   pkt_sat(g_stats.pub_fail, PKT_HB_PUB_FAIL));
+    pkt_put(hb, PKT_HB_CMD_DROP,   pkt_sat(g_stats.cmds_dropped, PKT_HB_CMD_DROP));
+    pkt_put(hb, PKT_HB_EV_DROP,    pkt_sat(g_stats.events_dropped, PKT_HB_EV_DROP));
     if (gb_map_held)
     {
-        (void)snprintf(map_hex, sizeof(map_hex), "%02x%02x%02x",
-                       (unsigned)g_map_held[0], (unsigned)g_map_held[1],
-                       (unsigned)g_map_held[2]);
+        pkt_put(hb, PKT_HB_MAP_HELD, 1u);
+        pkt_put(hb, PKT_HB_MAP, pkt_get(g_map_held, PKT_MAP_BITS));
     }
 
-    (void)snprintf(payload, sizeof(payload),
-        "{\"seq\":%lu,\"up_ms\":%lu,\"rssi\":%ld,\"reconn\":%lu,"
-        "\"pub_ok\":%lu,\"pub_fail\":%lu,\"cmd_rx\":%lu,\"map_rx\":%lu,"
-        "\"cmd_drop\":%lu,\"map\":\"%s\"}",
-        (unsigned long)g_heartbeat_seq++, (unsigned long)now_ms(), (long)rssi,
-        (unsigned long)g_stats.reconnects, (unsigned long)g_stats.pub_ok,
-        (unsigned long)g_stats.pub_fail, (unsigned long)g_stats.cmds_rx,
-        (unsigned long)g_stats.maps_rx, (unsigned long)g_stats.cmds_dropped,
-        map_hex);
-
-    (void)comms_publish("heartbeat", payload, 0u, false);
+    (void)comms_publish(SUBTOPIC_HEARTBEAT, hb, PKT_HB_LEN, 0u, false);
 }
 
-static void send_ack(char const * p_cmd_text, bool b_ok, char const * p_note)
+static void send_pending_acks(void)
 {
-    char payload[112];
-    (void)snprintf(payload, sizeof(payload),
-                   "{\"cmd\":\"%s\",\"ok\":%d,\"note\":\"%s\"}",
-                   p_cmd_text, b_ok ? 1 : 0, p_note);
-    (void)comms_publish("cmd/ack", payload, 1u, false);
-}
-
-/* Parse "start", "stop", "estop", "speed 25", "reset_peak", "ping". */
-static void handle_command_text(char * p_text)
-{
-    comms_cmd_t cmd = { CMD_UNKNOWN, 0 };
-    char *      p_arg;
-    uint32_t    i;
-
-    /* lower-case and trim trailing whitespace/newline */
-    for (i = 0u; p_text[i] != '\0'; i++)
+    if (g_link != COMMS_ONLINE)
     {
-        p_text[i] = (char)tolower((unsigned char)p_text[i]);
-    }
-    while ((i > 0u) && isspace((unsigned char)p_text[i - 1u]))
-    {
-        p_text[--i] = '\0';
-    }
-
-    p_arg = strchr(p_text, ' ');
-    if (p_arg != NULL)
-    {
-        *p_arg = '\0';
-        p_arg++;
-    }
-
-    g_stats.cmds_rx++;
-    printf("[comms] command: '%s'%s%s\n", p_text,
-           (p_arg != NULL) ? " arg=" : "", (p_arg != NULL) ? p_arg : "");
-
-    if (strcmp(p_text, "ping") == 0)
-    {
-        send_ack("ping", true, "pong");      /* handled here, link test */
         return;
     }
-    else if (strcmp(p_text, "start") == 0)      { cmd.type = CMD_START; }
-    else if (strcmp(p_text, "stop") == 0)       { cmd.type = CMD_STOP; }
-    else if (strcmp(p_text, "estop") == 0)      { cmd.type = CMD_ESTOP; }
-    else if (strcmp(p_text, "reset_peak") == 0) { cmd.type = CMD_RESET_PEAK; }
-    else if ((strcmp(p_text, "speed") == 0) && (p_arg != NULL))
+    if (gb_cmd_ack_pending &&
+        comms_publish(SUBTOPIC_CMD_ACK, &g_cmd_ack, PKT_ACK_LEN, 1u, false))
     {
-        cmd.type = CMD_SET_SPEED;
-        cmd.arg  = (int32_t)strtol(p_arg, NULL, 10);
+        gb_cmd_ack_pending = false;
     }
-    else
-    {
-        /* fall through as CMD_UNKNOWN */
-    }
-
-    if (cmd.type == CMD_UNKNOWN)
-    {
-        send_ack(p_text, false, "unknown command");
-    }
-    else if (g_cmd_handler == NULL)
-    {
-        send_ack(p_text, false, "no handler registered");
-    }
-    else
-    {
-        g_cmd_handler(&cmd);
-        send_ack(p_text, true, "");
-    }
-}
-
-/* Send the barcode-map ack if one is waiting. Called right after a map is
- * handled and then on every online pass until it goes out (the publish can
- * fail for a moment, e.g. while lwIP's request slots are busy just after a
- * reconnect). */
-static void send_pending_map_ack(void)
-{
-    if (gb_map_ack_pending && (g_link == COMMS_ONLINE) &&
-        comms_publish_bin(SUBTOPIC_MAP_ACK, &g_map_ack, 1u, 1u, false))
+    if (gb_map_ack_pending &&
+        comms_publish(SUBTOPIC_MAP_ACK, &g_map_ack, 1u, 1u, false))
     {
         gb_map_ack_pending = false;
     }
+}
+
+static void send_cmd_ack(uint32_t opcode, uint32_t result)
+{
+    g_cmd_ack = 0u;
+    pkt_put(&g_cmd_ack, PKT_ACK_OP, opcode);
+    pkt_put(&g_cmd_ack, PKT_ACK_RESULT, result);
+    gb_cmd_ack_pending = true;
+    send_pending_acks();
+}
+
+/* One command byte: opcode in bits 5-7, argument in bits 0-4 (packets.h). */
+static void handle_command(uint8_t const * p_data, uint8_t len)
+{
+    comms_cmd_t cmd = { (uint8_t)CMD_UNKNOWN, 0u };
+    uint32_t    opcode;
+    uint32_t    arg;
+    uint32_t    result;
+
+    g_stats.cmds_rx++;
+
+    if (len != PKT_CMD_LEN)
+    {
+        printf("[comms] command of %u bytes rejected (must be 1)\n", (unsigned)len);
+        send_cmd_ack(PKT_OP_UNREADABLE, PKT_ACK_BAD_LENGTH);
+        return;
+    }
+
+    opcode = pkt_get(p_data, PKT_CMD_OP);
+    arg    = pkt_get(p_data, PKT_CMD_ARG);
+    printf("[comms] command 0x%02X (opcode %lu, arg %lu)\n", (unsigned)p_data[0],
+           (unsigned long)opcode, (unsigned long)arg);
+
+    /* Only SPEED takes an argument; anything else with one is a stray byte
+     * (e.g. text typed by hand) and is refused. */
+    if ((opcode != PKT_OP_SPEED) && (arg != 0u))
+    {
+        send_cmd_ack(opcode, PKT_ACK_BAD_ARG);
+        return;
+    }
+
+    switch (opcode)
+    {
+        case PKT_OP_PING:
+            send_cmd_ack(PKT_OP_PING, 0u);      /* handled here, link test */
+            return;
+        case PKT_OP_START:      cmd.type = (uint8_t)CMD_START;      break;
+        case PKT_OP_STOP:       cmd.type = (uint8_t)CMD_STOP;       break;
+        case PKT_OP_ESTOP:      cmd.type = (uint8_t)CMD_ESTOP;      break;
+        case PKT_OP_RESET_PEAK: cmd.type = (uint8_t)CMD_RESET_PEAK; break;
+        case PKT_OP_SPEED:
+            cmd.type = (uint8_t)CMD_SET_SPEED;
+            cmd.arg  = (uint8_t)((arg > CMD_SPEED_MAX_CMS) ? CMD_SPEED_MAX_CMS : arg) & 0x1Fu;
+            break;
+        default:
+            send_cmd_ack(opcode, PKT_ACK_UNKNOWN_OP);
+            return;
+    }
+
+    if (g_cmd_handler == NULL)
+    {
+        result = PKT_ACK_NO_HANDLER;
+    }
+    else if (!g_cmd_handler(&cmd))
+    {
+        result = PKT_ACK_REJECTED;              /* e.g. cmd_q full */
+    }
+    else
+    {
+        result = (cmd.type == (uint8_t)CMD_SET_SPEED) ? (uint32_t)cmd.arg : 0u;
+    }
+    send_cmd_ack(opcode, result);
 }
 
 /* Barcode map: hand the bytes to the map handler (telemetry.c, which calls
@@ -465,7 +489,7 @@ static void handle_map(uint8_t const * p_payload, uint16_t len)
 
     g_map_ack = ack;
     gb_map_ack_pending = true;
-    send_pending_map_ack();
+    send_pending_acks();
 }
 
 static void drain_rx(void)
@@ -481,11 +505,7 @@ static void drain_rx(void)
 
         if (msg.kind == (uint8_t)RX_CMD)
         {
-            char text[RX_DATA_MAX + 1u];
-
-            memcpy(text, msg.data, msg.len);
-            text[msg.len] = '\0';
-            handle_command_text(text);
+            handle_command(msg.data, msg.len);
         }
         else if (msg.kind == (uint8_t)RX_MAP)
         {
@@ -519,8 +539,12 @@ bool comms_init(void)
     pico_get_unique_board_id_string(board_id, sizeof(board_id));
     (void)snprintf(g_client_id, sizeof(g_client_id), "robocar-%s",
                    &board_id[sizeof(board_id) - 9u]);   /* last 8 hex chars */
-    (void)snprintf(g_topic_status, sizeof(g_topic_status), "%s/status",
-                   MQTT_TOPIC_ROOT);
+    (void)snprintf(g_topic_status, sizeof(g_topic_status), "%s/%s",
+                   MQTT_TOPIC_ROOT, SUBTOPIC_STATUS);
+    g_will_msg[0] = 0;
+    pkt_put((uint8_t *)g_will_msg, PKT_STATUS_ONLINE, 0u);
+    pkt_put((uint8_t *)g_will_msg, PKT_STATUS_VERSION, PKT_LAYOUT_VERSION);
+    g_will_msg[1] = '\0';
     (void)snprintf(g_topic_cmd, sizeof(g_topic_cmd), "%s/%s",
                    MQTT_TOPIC_ROOT, SUBTOPIC_CMD);
     (void)snprintf(g_topic_map, sizeof(g_topic_map), "%s/%s",
@@ -631,7 +655,7 @@ void comms_poll(void)
             }
             else
             {
-                send_pending_map_ack();
+                send_pending_acks();
                 if (deadline_passed(g_next_heartbeat_ms))
                 {
                     g_next_heartbeat_ms += HEARTBEAT_PERIOD_MS;
@@ -696,28 +720,13 @@ bool comms_get_map(uint8_t p_out[COMMS_MAP_LEN])
     return true;
 }
 
-bool comms_publish(char const * p_subtopic, char const * p_payload,
-                   uint8_t qos, bool b_retain)
+void comms_note_event_dropped(void)
 {
-    size_t len;
-
-    if (p_payload == NULL)
-    {
-        g_stats.pub_fail++;
-        return false;
-    }
-
-    len = strlen(p_payload);
-    if (len > UINT16_MAX)
-    {
-        g_stats.pub_fail++;
-        return false;
-    }
-    return comms_publish_bin(p_subtopic, p_payload, (uint16_t)len, qos, b_retain);
+    g_stats.events_dropped++;
 }
 
-bool comms_publish_bin(char const * p_subtopic, void const * p_data,
-                       uint16_t len, uint8_t qos, bool b_retain)
+bool comms_publish(char const * p_subtopic, void const * p_data,
+                   uint16_t len, uint8_t qos, bool b_retain)
 {
     char  topic[TOPIC_MAX_LEN];
     err_t err;

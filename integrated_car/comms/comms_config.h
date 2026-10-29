@@ -13,7 +13,7 @@
 #if __has_include("wifi_secrets.h")
 #include "wifi_secrets.h"
 #else
-#warning "comms/wifi_secrets.h not found - using placeholders from wifi_secrets.example.h"
+#warning "wifi_secrets.h (next to comms_config.h) not found - using placeholders from wifi_secrets.example.h"
 #include "wifi_secrets.example.h"
 #endif
 
@@ -25,10 +25,14 @@
 
 /* ---- Timing ------------------------------------------------------------- */
 #define TELEM_PERIOD_MS         (200u)    /* live telemetry at 5 Hz            */
+#define ODOM_PERIOD_MS          (1000u)   /* encoder counts at 1 Hz            */
 #define HEARTBEAT_PERIOD_MS     (1000u)   /* heartbeat at 1 Hz                 */
 #define WIFI_JOIN_TIMEOUT_MS    (15000u)  /* give up on one WiFi attempt       */
 #define MQTT_CONNECT_TIMEOUT_MS (8000u)   /* give up on one broker attempt     */
 #define RECONNECT_MIN_MS        (1000u)   /* back-off starts here...           */
 #define RECONNECT_MAX_MS        (16000u)  /* ...doubles up to here            */
+
+/* ---- Limits ------------------------------------------------------------- */
+#define CMD_SPEED_MAX_CMS       (20u)     /* speed commands capped at 0.2 m/s  */
 
 #endif /* COMMS_CONFIG_H */
