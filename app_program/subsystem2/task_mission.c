@@ -267,7 +267,7 @@ LOCAL const char *s5_fault_cause(void)
 	if (tk_ref_flg(flg_faults, &rflg) != E_OK) {
 		p_cause = "unknown (flg_faults unreadable)";
 	} else if ((rflg.flgptn & FAULT_BIT_US_NO_ECHO) != 0U) {
-		p_cause = "ultrasonic NO ECHO / ECHO stuck (sensor or wiring)";
+		p_cause = "ultrasonic NO ECHO / ECHO stuck / echo too short (see [S5 dbg])";
 	} else if ((rflg.flgptn & FAULT_BIT_US_TIMEOUT) != 0U) {
 		p_cause = "S2<->S5 handshake TIMEOUT (not the sensor)";
 	} else if ((rflg.flgptn & FAULT_BIT_NO_SAFE_RTE) != 0U) {

@@ -45,7 +45,11 @@
  * spike seen in one interrupt (width ~0). Without this check they read
  * as "2 cm" and look like an obstacle touching the car.
  */
-#define ECHO_MIN_US		(100U)
+#define ECHO_MIN_US		(OA_DIST_MIN_VALID_CM * OA_US_PER_CM)	/* 6 cm = 348 us */
+
+#if (OA_DIST_MIN_VALID_CM >= OA_BYPASS_ABORT_CM) || (OA_DIST_MIN_VALID_CM >= OA_STOP_DIST_CM)
+#error "OA_DIST_MIN_VALID_CM would hide real obstacles: keep it below the stop/abort distances."
+#endif
 
 LOCAL ID		s_echo_flg = 0;
 LOCAL volatile UW	s_armed = 0U;		/* task sets, ISR clears   */
@@ -54,6 +58,7 @@ LOCAL volatile UW	s_rise_us = 0U;		/* ISR only                */
 LOCAL volatile UW	s_width_us = 0U;	/* ISR writes, task reads  */
 LOCAL volatile UW	s_glitches = 0U;	/* ISR only writer, task reads */
 LOCAL volatile UW	s_edges = 0U;		/* ISR only writer: GP5 edges seen */
+LOCAL volatile UW	s_short_seen = 0U;	/* task clears before arming, ISR sets */
 
 EXPORT void drv_hcsr04_edge(UW events)
 {
@@ -73,6 +78,7 @@ EXPORT void drv_hcsr04_edge(UW events)
 		if (width < ECHO_MIN_US) {
 			/* Noise: forget it and keep waiting for the real echo. */
 			s_glitches++;
+			s_short_seen = 1U;
 			s_rise_seen = 0U;
 			return;
 		}
@@ -164,8 +170,9 @@ EXPORT hcsr04_status_t drv_hcsr04_measure_cm(UB *p_dist_cm)
 	}
 
 	(void)tk_clr_flg(s_echo_flg, ~ECHO_DONE_BIT);
-	s_rise_seen = 0U;
-	s_armed     = 1U;
+	s_rise_seen  = 0U;
+	s_short_seen = 0U;
+	s_armed      = 1U;
 
 	gpio_set_val(OA_PIN_TRIG, 1U);
 	s5_busy_wait_us(TRIG_PULSE_US);
@@ -178,7 +185,11 @@ EXPORT hcsr04_status_t drv_hcsr04_measure_cm(UB *p_dist_cm)
 	if (er != E_OK) {
 		/* Rose but did not fall in time: beyond our cap (HC-SR04 holds
 		   ECHO ~38 ms when nothing is in range). Never rose: fault. */
-		return (s_rise_seen != 0U) ? HCSR04_OK : HCSR04_NO_ECHO;
+		if (s_rise_seen != 0U) {
+			return HCSR04_OK;
+		}
+		/* The sensor did answer, but only with a too-short pulse. */
+		return (s_short_seen != 0U) ? HCSR04_TOO_SHORT : HCSR04_NO_ECHO;
 	}
 
 	cm = (s_width_us + (OA_US_PER_CM / 2U)) / OA_US_PER_CM;	/* rounded */
