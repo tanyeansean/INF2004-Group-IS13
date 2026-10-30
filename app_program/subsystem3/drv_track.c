@@ -23,6 +23,9 @@
 #include <sys/machine.h>
 #include "subsystem3.h"
 #include "drv_track.h"
+#if APP_WITH_S5
+#include "../subsystem5/subsystem5.h"	/* drv_hcsr04_edge() for GP5 */
+#endif
 
 /* ---- RP2040 registers not covered by libbsp ---- */
 #define REG_ALIAS_SET		(0x2000U)
@@ -177,6 +180,16 @@ LOCAL void gpio_bank0_inthdr(UINT intno)
 	/* Edge bits are write-1-to-clear: clear only ours. */
 	out_w(S3_IO_INTR(S3_PIN_BARCODE),
 	      (ev & S3_EVT_EDGES) << S3_IO_SHIFT(S3_PIN_BARCODE));
+#if APP_WITH_S5
+	{	/* GP5: Joe's ultrasonic echo (subsystem 5), same shared handler */
+		UW const ev5 = (in_w(S3_IO_PROC_INTS(core, 5U)) >> S3_IO_SHIFT(5U)) & 0xFU;
+
+		out_w(S3_IO_INTR(5U), (ev5 & S3_EVT_EDGES) << S3_IO_SHIFT(5U));
+		if ((ev5 & S3_EVT_EDGES) != 0U) {
+			drv_hcsr04_edge(ev5);
+		}
+	}
+#endif
 	if ((ev & S3_EVT_EDGES) == 0U) {
 		return;
 	}

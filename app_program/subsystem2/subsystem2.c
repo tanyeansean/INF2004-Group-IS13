@@ -9,6 +9,8 @@ EXPORT ID	mbf_line_err;	/* IF-01, owned by S2 (the receiver) */
 EXPORT ID	mbf_barcode;	/* IF-02 */
 EXPORT ID	mbf_cmd;	/* IF-04 */
 EXPORT ID	mbf_motor;	/* Mission Control -> Motor Control (private) */
+EXPORT ID	mbf_obstacle;	/* IF-06, owned by S2 (the receiver) */
+EXPORT ID	flg_faults;	/* shared fault flag, cleared only by S2 */
 
 /* Defined here, set up before any task starts; written only by Telemetry
    with nav_map_apply(), read by Mission Control (nav_cmd.h). */
@@ -18,6 +20,7 @@ EXPORT nav_map_t	g_nav_map;
 #define S2_BARCODE_MSGS	(4U)
 #define S2_CMD_MSGS	(4U)
 #define S2_MOTOR_MSGS	(4U)
+#define S2_OBST_MSGS	(4U)	/* S5 sends at most ~2 per scan */
 
 LOCAL ID make_mbf(UW msg_size, UW msgs)
 {
@@ -47,7 +50,21 @@ EXPORT ER subsystem2_init(void)
 		return mbf_cmd;
 	}
 	mbf_motor = make_mbf(sizeof(UW), S2_MOTOR_MSGS);
-	return (mbf_motor < E_OK) ? mbf_motor : E_OK;
+	if (mbf_motor < E_OK) {
+		return mbf_motor;
+	}
+	mbf_obstacle = make_mbf(OBSTACLE_MSG_SIZE, S2_OBST_MSGS);
+	if (mbf_obstacle < E_OK) {
+		return mbf_obstacle;
+	}
+	{
+		T_CFLG cflg = {0};
+
+		cflg.flgatr  = TA_TFIFO | TA_WMUL;	/* many setters, S2 reads */
+		cflg.iflgptn = 0U;
+		flg_faults = tk_cre_flg(&cflg);
+	}
+	return (flg_faults < E_OK) ? flg_faults : E_OK;
 }
 
 EXPORT ER subsystem2_start(void)

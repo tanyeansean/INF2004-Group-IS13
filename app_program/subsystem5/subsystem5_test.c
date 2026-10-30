@@ -28,9 +28,11 @@ LOCAL void make_scan(oa_scan_t *p_s, UB start, UB step, UB end, UB (*p_dist)(UB)
 	}
 }
 
-LOCAL UB box(UB a)     { return ((a >= 70U) && (a <= 100U)) ? 25U : ((a <= 50U) ? 45U : 255U); }
-LOCAL UB nothing(UB a) { (void)a; return 255U; }
-LOCAL UB wall(UB a)    { (void)a; return 20U; }
+/* Scenarios use the real sweep, OA_SERVO_MIN_DEG..MAX_DEG (65..115 deg). */
+LOCAL UB box_wall_right(UB a) { return ((a >= 85U) && (a <= 100U)) ? 25U : ((a <= 65U) ? 45U : 255U); }
+LOCAL UB box_wall_left(UB a)  { return ((a >= 80U) && (a <= 95U)) ? 25U : ((a >= 115U) ? 45U : 255U); }
+LOCAL UB nothing(UB a)        { (void)a; return 255U; }
+LOCAL UB wall(UB a)           { (void)a; return 20U; }
 
 LOCAL BOOL msg_roundtrip_all(void)
 {
@@ -78,20 +80,25 @@ EXPORT void subsystem5_test(void)
 	buf[0] = (uint8_t)(5U << 2);	/* plan code 5 is undefined */
 	TEST_CHECK("S5-U02", !obstacle_msg_unpack(buf, &out), "undefined plan code rejected");
 
-	make_scan(&s, 40U, 5U, 140U, box);
+	make_scan(&s, OA_SERVO_MIN_DEG, OA_FINE_STEP_DEG, OA_SERVO_MAX_DEG, box_wall_right);
 	profile_build(&s, &p);
 	plan = profile_plan(&p, 0U, &step);
 	TEST_CHECK("S5-U03", p.b_found && (p.closest_cm == 25U) && (plan == OBS_PLAN_LEFT),
-		   "box right of centre -> LEFT");
+		   "box, something on the right -> LEFT");
 	tm_printf((UB*)"        box: width=%d L=%d R=%d sidestep=%d\n",
 		  p.width_cm, p.left_clear_cm, p.right_clear_cm, step);
 
-	make_scan(&s, 15U, 5U, 165U, nothing);
+	make_scan(&s, OA_SERVO_MIN_DEG, OA_FINE_STEP_DEG, OA_SERVO_MAX_DEG, box_wall_left);
+	profile_build(&s, &p);
+	TEST_CHECK("S5-U15", profile_plan(&p, 0U, &step) == OBS_PLAN_RIGHT,
+		   "box, something on the left -> RIGHT");
+
+	make_scan(&s, OA_SERVO_MIN_DEG, OA_FINE_STEP_DEG, OA_SERVO_MAX_DEG, nothing);
 	profile_build(&s, &p);
 	TEST_CHECK("S5-U04", (!p.b_found) && (profile_plan(&p, 0U, &step) == OBS_PLAN_CONTINUE),
 		   "empty scan -> CONTINUE");
 
-	make_scan(&s, 15U, 5U, 165U, wall);
+	make_scan(&s, OA_SERVO_MIN_DEG, OA_FINE_STEP_DEG, OA_SERVO_MAX_DEG, wall);
 	profile_build(&s, &p);
 	TEST_CHECK("S5-U05", (profile_plan(&p, 0U, &step) == OBS_PLAN_REVERSE) &&
 			     (profile_plan(&p, OA_MAX_RETRIES, &step) == OBS_PLAN_STOP),

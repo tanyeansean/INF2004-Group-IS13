@@ -35,20 +35,40 @@
 
 /* ---------------------------------------------------------------- Servo */
 #define OA_SERVO_CENTRE_DEG	(90U)
-#define OA_SERVO_MIN_DEG	(15U)
-#define OA_SERVO_MAX_DEG	(165U)
+/* Sweep limited to centre +/- 30 deg: no physical room for more on the
+   car. Every commanded angle is clamped to this range. Widen these (and
+   the coarse scan below) once the mount allows it. */
+#define OA_SERVO_MIN_DEG	(65U)	/* centre - 25: mount barely clears */
+#define OA_SERVO_MAX_DEG	(115U)	/* centre + 25                      */
 #define OA_SERVO_PULSE_MIN_US	(500U)	/* TUNE: pulse at 0 deg.                  */
 #define OA_SERVO_PULSE_MAX_US	(2500U)	/* TUNE: pulse at 180 deg.                */
 #define OA_SERVO_MS_PER_DEG	(2U)	/* SG90 ~0.1 s / 60 deg = 1.7 ms/deg.     */
 #define OA_SERVO_SETTLE_MS	(30U)	/* TUNE: extra wait after a move.         */
 #define OA_SERVO_LEFT_IS_HIGH	(1)	/* 1: angle > 90 points LEFT. VERIFY.     */
 
+/*
+ * 0 = servo DISABLED: no PWM pulses are ever sent, so the servo stays
+ *     where it is. Every scan point then measures straight ahead, so
+ *     width/clearance/LEFT-RIGHT are not meaningful.
+ * 1 = servo enabled, sweeping only OA_SERVO_MIN_DEG..OA_SERVO_MAX_DEG.
+ */
+#ifndef OA_SERVO_ENABLE
+#define OA_SERVO_ENABLE		(1)
+#endif
+
 /* ---------------------------------------------------------------- Scanning */
-#define OA_COARSE_START_DEG	(30U)	/* 30, 60, 90, 120, 150 deg.              */
-#define OA_COARSE_STEP_DEG	(30U)
-#define OA_COARSE_COUNT		(5U)
+/* 65, 75, 85, 95, 105, 115 deg. 10 deg steps are finer than the ~15 deg
+   beam, so the coarse scan leaves no blind gaps inside the narrow sweep. */
+#define OA_COARSE_START_DEG	(65U)
+#define OA_COARSE_STEP_DEG	(10U)
+#define OA_COARSE_COUNT		(6U)
 #define OA_FINE_STEP_DEG	(5U)	/* TUNE: smaller = slower, sharper edges. */
-#define OA_FINE_MARGIN_DEG	(20U)	/* TUNE: scan this far past coarse hits.  */
+#define OA_FINE_MARGIN_DEG	(15U)	/* TUNE: scan this far past coarse hits.  */
+
+#if (OA_COARSE_START_DEG < OA_SERVO_MIN_DEG) || \
+    ((OA_COARSE_START_DEG + ((OA_COARSE_COUNT - 1U) * OA_COARSE_STEP_DEG)) > OA_SERVO_MAX_DEG)
+#error "Coarse scan angles fall outside OA_SERVO_MIN_DEG..OA_SERVO_MAX_DEG."
+#endif
 #define OA_OBSTACLE_RANGE_CM	(60U)	/* TUNE: a reading this close is a "hit". */
 #define OA_CLUSTER_JUMP_CM	(15U)	/* TUNE: bigger jump = different object.  */
 #define OA_TAN_HALF_BEAM_Q15	(4314)	/* TUNE: tan(7.5 deg) * 32768.            */
@@ -62,7 +82,11 @@
 #define OA_WAIT_CHUNK_MS	(50U)	/* <= 60 ms, agreed for the heartbeat.    */
 #define OA_STOP_ACK_TIMEOUT_MS	(500U)
 #define OA_REVERSE_TIMEOUT_MS	(3000U)
-#define OA_BYPASS_TIMEOUT_MS	(5000U)	/* Week 10 grade A: < 3 s in total.       */
+#define OA_BYPASS_TIMEOUT_MS	(10000U) /* Must be LONGER than Mission Control's
+					    own bypass limit (S2_BYP_TIMEOUT_MS),
+					    so S2 always gives up first. The
+					    timed open-loop bypass takes ~5-7 s;
+					    Week 10 grade A wants < 3 s.        */
 #define OA_BYPASS_POLL_MS	(20U)
 #define OA_BYPASS_ABORT_CM	(10U)	/* TUNE: too close during bypass.         */
 
@@ -72,6 +96,12 @@
  * make ... EXTRA_CFLAGS=-DOA_PROBE_PIN=15 after adding that hook, or edit.
  * HIGH from "obstacle confirmed" until the plan is sent (or CLEAR/FAULT).
  */
+/* 1: print one "[S5 dbg]" line per second with the raw sensor readings,
+   and the reason whenever S5 faults. Set 0 once the sensor is trusted. */
+#ifndef OA_DEBUG
+#define OA_DEBUG		(1)
+#endif
+
 #ifndef OA_PROBE_PIN
 #define OA_PROBE_PIN		(-1)
 #endif

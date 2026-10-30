@@ -135,15 +135,37 @@ LOCAL hcsr04_status_t oa_ping(UB *p_dist_cm)
 	status = drv_hcsr04_measure_cm(p_dist_cm);
 	oa_heartbeat();
 
-	if (status == HCSR04_NO_ECHO) {
+	/* NO_ECHO (ECHO never rose) and BUSY (ECHO already high, i.e. stuck)
+	   both mean the sensor is not working: either one, 5 pings in a row,
+	   is a fault. A stuck-high ECHO used to reset the count and hide. */
+	if ((status == HCSR04_NO_ECHO) || (status == HCSR04_BUSY)) {
 		SAT_INC(s_ctx.no_echo_count, OA_NO_ECHO_LIMIT);
 		if (s_ctx.no_echo_count >= OA_NO_ECHO_LIMIT) {
+#if OA_DEBUG
+			if (s_ctx.b_sensor_fault == 0U) {
+				tm_printf((UB *)"[S5 dbg] FAULT: %s %u pings in a row\n",
+					  (status == HCSR04_BUSY) ? "ECHO stuck HIGH" : "no echo",
+					  (UINT)OA_NO_ECHO_LIMIT);
+			}
+#endif
 			oa_set_fault(S5_FAULT_NO_ECHO);
 			s_ctx.b_sensor_fault = 1U;
 		}
 	} else {
 		s_ctx.no_echo_count = 0U;
 	}
+
+#if OA_DEBUG
+			if (s_ctx.b_sensor_fault == 0U) {
+				UW e, g, w;
+
+				drv_hcsr04_diag(&e, &g, &w);
+				tm_printf((UB *)"[S5 dbg] FAULT: %s %u pings in a row "
+					  "(edges=%u noise=%u)\n",
+					  (status == HCSR04_BUSY) ? "ECHO stuck HIGH" : "no echo",
+					  (UINT)OA_NO_ECHO_LIMIT, (UINT)e, (UINT)g);
+			}
+#endif
 	return status;
 }
 
@@ -233,6 +255,10 @@ LOCAL s5_state_t oa_state_wait_stop(void)
 		s_ctx.b_reversing = 0U;
 		return S5_STATE_COARSE_SCAN;
 	}
+#if OA_DEBUG
+	tm_printf((UB *)"[S5 dbg] FAULT: Mission Control did not answer MOTORS_STOPPED in %u ms\n",
+		  (UINT)timeout_ms);
+#endif
 	oa_set_fault(S5_FAULT_TIMEOUT);
 	return S5_STATE_FAULT;
 }
@@ -293,6 +319,9 @@ LOCAL s5_state_t oa_state_plan(void)
 	case OBS_PLAN_STOP:
 	default:
 		oa_send(OBS_MSG_PLAN, OBS_PLAN_STOP);
+#if OA_DEBUG
+		tm_printf((UB *)"[S5 dbg] FAULT: no route (both sides blocked, retries used)\n");
+#endif
 		oa_set_fault(S5_FAULT_NO_ROUTE);
 		return S5_STATE_FAULT;
 	}
@@ -306,6 +335,10 @@ LOCAL s5_state_t oa_state_bypass(void)
 	ER	er;
 
 	if (elapsed_ms >= OA_BYPASS_TIMEOUT_MS) {
+#if OA_DEBUG
+		tm_printf((UB *)"[S5 dbg] FAULT: no LINE_REACQUIRED within %u ms\n",
+			  (UINT)OA_BYPASS_TIMEOUT_MS);
+#endif
 		oa_set_fault(S5_FAULT_TIMEOUT);
 		return S5_STATE_FAULT;
 	}
@@ -369,6 +402,9 @@ LOCAL void oa_enter(s5_state_t next)
 
 	case S5_STATE_FAULT:
 		PROBE_SET(FALSE);
+		/* Forget any old RESUME, so only a resume sent AFTER this fault
+		   (Mission Control: START / GP20) can clear it. */
+		(void)tk_clr_flg(flg_avoid, ~(UINT)AVOID_EVT_RESUME);
 		oa_send(OBS_MSG_FAULT, OBS_PLAN_STOP);
 		break;
 

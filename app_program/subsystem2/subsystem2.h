@@ -31,6 +31,17 @@ IMPORT ID	mbf_barcode;	/* IF-02 */
 IMPORT ID	mbf_cmd;	/* IF-04 */
 IMPORT nav_map_t	g_nav_map;
 
+/* IF-06 (S5 -> S2): obstacle_q.  OBSTACLE_MSG_SIZE (6) bytes per message,
+   packed by obstacle_msg_pack() (subsystem5/obstacle_msg.h).  Owned here,
+   the receiver.  Mission Control drains it every pass and answers on S5's
+   flg_avoid (AVOID_EVT_MOTORS_STOPPED / LINE_REACQUIRED / RESUME). */
+IMPORT ID	mbf_obstacle;
+
+/* Shared 16-bit fault flag (shared_types.h section 1, G1/G2/C5).  Each task
+   sets ONLY its own FAULT_BIT_* with tk_set_flg(); Mission Control reads
+   it every pass and is the only task that clears bits. */
+IMPORT ID	flg_faults;
+
 /* ---------------------------------------------------------------------
  *  Private to subsystem 2: Mission Control -> Motor Control (mbf_motor).
  *  Open-loop stand-in for Sean's motor_cmd_q until encoders + PID exist.

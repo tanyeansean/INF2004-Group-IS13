@@ -38,16 +38,29 @@
 #define INTNO_IO_BANK0		(13U)	/* RP2040 IO_IRQ_BANK0 */
 #define S5_GPIO_INTPRI		(2)
 
+/*
+ * Pulses shorter than this are noise, not echoes: the sensor's minimum
+ * range is 2 cm = 116 us. Typical cause: the 10 us TRIG pulse coupling
+ * into the ECHO wire next to it in the Grove cable, or both edges of a
+ * spike seen in one interrupt (width ~0). Without this check they read
+ * as "2 cm" and look like an obstacle touching the car.
+ */
+#define ECHO_MIN_US		(100U)
+
 LOCAL ID		s_echo_flg = 0;
 LOCAL volatile UW	s_armed = 0U;		/* task sets, ISR clears   */
 LOCAL volatile UW	s_rise_seen = 0U;	/* ISR sets, task reads    */
 LOCAL volatile UW	s_rise_us = 0U;		/* ISR only                */
 LOCAL volatile UW	s_width_us = 0U;	/* ISR writes, task reads  */
+LOCAL volatile UW	s_glitches = 0U;	/* ISR only writer, task reads */
+LOCAL volatile UW	s_edges = 0U;		/* ISR only writer: GP5 edges seen */
 
 EXPORT void drv_hcsr04_edge(UW events)
 {
 	UW const now_us = s5_time_us();
+	UW	 width;
 
+	s_edges++;
 	if (s_armed == 0U) {
 		return;
 	}
@@ -56,10 +69,24 @@ EXPORT void drv_hcsr04_edge(UW events)
 		s_rise_seen = 1U;
 	}
 	if (((events & IO_EVT_EDGE_LOW) != 0U) && (s_rise_seen != 0U)) {
-		s_width_us = now_us - s_rise_us;
+		width = now_us - s_rise_us;
+		if (width < ECHO_MIN_US) {
+			/* Noise: forget it and keep waiting for the real echo. */
+			s_glitches++;
+			s_rise_seen = 0U;
+			return;
+		}
+		s_width_us = width;
 		s_armed    = 0U;
 		(void)tk_set_flg(s_echo_flg, ECHO_DONE_BIT);	/* allowed in handlers */
 	}
+}
+
+EXPORT void drv_hcsr04_diag(UW *p_edges, UW *p_glitches, UW *p_last_width_us)
+{
+	*p_edges         = s_edges;
+	*p_glitches      = s_glitches;
+	*p_last_width_us = s_width_us;
 }
 
 #if S5_OWN_GPIO_IRQ

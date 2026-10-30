@@ -37,4 +37,8 @@ IMPORT ER		drv_hcsr04_init(void);
  */
 IMPORT hcsr04_status_t	drv_hcsr04_measure_cm(UB *p_dist_cm);
 
+/* Debug counters: GP5 edges seen by the ISR (any time), pulses rejected
+   as noise (< 100 us), and the last accepted echo width. Any task. */
+IMPORT void		drv_hcsr04_diag(UW *p_edges, UW *p_glitches, UW *p_last_width_us);
+
 #endif /* DRV_HCSR04_H */
