@@ -33,6 +33,13 @@ IMPORT ID	flg_avoid;
 							   or a finished reverse)   */
 #define AVOID_EVT_LINE_REACQUIRED	(1U << 1)	/* line found after bypass  */
 #define AVOID_EVT_RESUME		(1U << 2)	/* fault cleared, resume    */
+#define AVOID_EVT_MC_READY		(1U << 3)	/* Mission Control is now
+							   draining obstacle_q: S5
+							   may start pinging       */
+#define AVOID_EVT_ABORT			(1U << 4)	/* Mission Control stopped
+							   the car mid-avoid (STOP,
+							   GP20, give-up): S5 goes
+							   back to MONITOR, no fault */
 
 /* S5 states, 3 bits (also byte 0 bits 5-7 of every obstacle_q message). */
 typedef enum

@@ -128,6 +128,14 @@ LOCAL void motor_set(H left, H right)
 LOCAL void car_stop(robot_state_t why)
 {
 	motor_set(0, 0);
+#if APP_WITH_S5
+	/* Leaving an avoid without finishing it (give-up, STOP, ESTOP, GP20):
+	   S5 is waiting for MOTORS_STOPPED or LINE_REACQUIRED that will never
+	   come, and would latch a TIMEOUT "fault". Tell it to stand down. */
+	if (g_mode == CAR_AVOID) {
+		(void)tk_set_flg(flg_avoid, AVOID_EVT_ABORT);
+	}
+#endif
 	g_mode = CAR_IDLE;
 	g_hold_until_ms = 0U;
 	s1_post_state(why);
@@ -214,6 +222,9 @@ LOCAL void maneuver_step(void)
  *    S5: PLAN REVERSE    -> back off OBS_REVERSE_CM, reply MOTORS_STOPPED
  *    S5: PLAN STOP / FAULT -> stop, stay stopped until START
  *    S5: CLEAR (while stopped for it) -> obstacle gone, resume line following
+ *    S2: MC_READY once, just before the main loop -> S5 starts pinging
+ *    S2: ABORT whenever the car leaves CAR_AVOID via car_stop() (give-up,
+ *        STOP, ESTOP, GP20) -> S5 returns to MONITOR instead of timing out
  *
  *  Bypass on side D (D = left or right), all open loop:
  *    TURN_OUT  spin 45 deg toward D
@@ -243,6 +254,27 @@ LOCAL UW		g_obs_bad = 0U;	/* undecodable obstacle_q messages */
 
 LOCAL const char * const k_obs_plan[] = { "STOP", "CONTINUE", "LEFT", "RIGHT",
 					  "REVERSE", "?", "?", "?" };
+
+/* Why S5 faulted: OBS_MSG_FAULT carries no cause, but S5 sets its fault
+   bit in flg_faults BEFORE it sends the message. */
+LOCAL const char *s5_fault_cause(void)
+{
+	T_RFLG		rflg;
+	const char	*p_cause = "unknown (no S5 fault bit set)";
+
+	if (tk_ref_flg(flg_faults, &rflg) != E_OK) {
+		p_cause = "unknown (flg_faults unreadable)";
+	} else if ((rflg.flgptn & FAULT_BIT_US_NO_ECHO) != 0U) {
+		p_cause = "ultrasonic NO ECHO / ECHO stuck (sensor or wiring)";
+	} else if ((rflg.flgptn & FAULT_BIT_US_TIMEOUT) != 0U) {
+		p_cause = "S2<->S5 handshake TIMEOUT (not the sensor)";
+	} else if ((rflg.flgptn & FAULT_BIT_NO_SAFE_RTE) != 0U) {
+		p_cause = "NO SAFE ROUTE (both sides blocked)";
+	} else {
+		/* keep "unknown" */
+	}
+	return p_cause;
+}
 
 LOCAL void av_reply(UINT bits)
 {
@@ -366,10 +398,10 @@ LOCAL void on_obstacle(obstacle_msg_t const *p)
 	case OBS_MSG_FAULT:
 	default:
 		if (g_mode != CAR_IDLE) {
-			av_give_up("obstacle sensor FAULT");
-		} else {
-			tm_printf((UB *)"[obs] S5 FAULT (car idle). START clears it.\n");
+			av_give_up("obstacle subsystem (S5) FAULT");
 		}
+		tm_printf((UB *)"[obs] S5 FAULT, cause: %s. START / GP20 clears it.\n",
+			  s5_fault_cause());
 		break;
 	}
 }
@@ -675,6 +707,10 @@ EXPORT void mission_task(INT stacd, void *exinf)
 		  STEER_INVERT, JUNCTION_STOPS ? "stop" : "barcode turn");
 
 	next_print_ms = now_ms();
+#if APP_WITH_S5
+	/* From here on obstacle_q is drained every pass: let S5 start pinging. */
+	(void)tk_set_flg(flg_avoid, AVOID_EVT_MC_READY);
+#endif
 	for (;;) {
 		n = tk_rcv_mbf(mbf_line_err, &msg, S2_LINE_WAIT_MS);
 		t = now_ms();

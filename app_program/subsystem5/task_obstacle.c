@@ -106,8 +106,9 @@ LOCAL void oa_sleep_ms(UW ms)
 	}
 }
 
-/* Wait for any of 'bits' on flg_avoid, in chunks, up to timeout_ms. */
-LOCAL BOOL oa_wait_avoid_evt(UINT bits, UW timeout_ms)
+/* Wait for any of 'bits' on flg_avoid, in chunks, up to timeout_ms.
+   Returns the bits that arrived (masked to 'bits'), or 0 on timeout. */
+LOCAL UINT oa_wait_avoid_evt(UINT bits, UW timeout_ms)
 {
 	UW	waited = 0U;
 	UINT	flgptn = 0U;
@@ -118,12 +119,12 @@ LOCAL BOOL oa_wait_avoid_evt(UINT bits, UW timeout_ms)
 				&flgptn, (TMO)OA_WAIT_CHUNK_MS);
 		oa_heartbeat();
 		if (er == E_OK) {
-			return TRUE;
+			return (flgptn & bits);
 		}
 		waited += OA_WAIT_CHUNK_MS;
 	} while ((er == E_TMOUT) && (waited < timeout_ms));
 
-	return FALSE;
+	return 0U;
 }
 
 /* One ping, never faster than the HC-SR04's 60 ms minimum period. Paced
@@ -148,20 +149,9 @@ LOCAL hcsr04_status_t oa_ping(UB *p_dist_cm)
 		SAT_INC(s_ctx.no_echo_count, OA_NO_ECHO_LIMIT);
 		if (s_ctx.no_echo_count >= OA_NO_ECHO_LIMIT) {
 #if OA_DEBUG
-			if (s_ctx.b_sensor_fault == 0U) {
-				tm_printf((UB *)"[S5 dbg] FAULT: %s %u pings in a row\n",
-					  (status == HCSR04_BUSY) ? "ECHO stuck HIGH" : "no echo",
-					  (UINT)OA_NO_ECHO_LIMIT);
-			}
-#endif
-			oa_set_fault(S5_FAULT_NO_ECHO);
-			s_ctx.b_sensor_fault = 1U;
-		}
-	} else {
-		s_ctx.no_echo_count = 0U;
-	}
-
-#if OA_DEBUG
+			/* Printed once, when the fault is first latched. (This
+			   used to sit outside the if, so it printed "FAULT" after
+			   every HEALTHY ping.) */
 			if (s_ctx.b_sensor_fault == 0U) {
 				UW e, g, w;
 
@@ -172,6 +162,13 @@ LOCAL hcsr04_status_t oa_ping(UB *p_dist_cm)
 					  (UINT)OA_NO_ECHO_LIMIT, (UINT)e, (UINT)g);
 			}
 #endif
+			oa_set_fault(S5_FAULT_NO_ECHO);
+			s_ctx.b_sensor_fault = 1U;
+		}
+	} else {
+		s_ctx.no_echo_count = 0U;
+	}
+
 	return status;
 }
 
@@ -256,8 +253,15 @@ LOCAL s5_state_t oa_state_wait_stop(void)
 {
 	UW const timeout_ms = (s_ctx.b_reversing != 0U) ? OA_REVERSE_TIMEOUT_MS
 							: OA_STOP_ACK_TIMEOUT_MS;
+	UINT const got = oa_wait_avoid_evt(AVOID_EVT_MOTORS_STOPPED | AVOID_EVT_ABORT,
+					   timeout_ms);
 
-	if (oa_wait_avoid_evt(AVOID_EVT_MOTORS_STOPPED, timeout_ms)) {
+	if ((got & AVOID_EVT_ABORT) != 0U) {
+		/* Mission Control stopped the car itself: not a fault. */
+		s_ctx.b_reversing = 0U;
+		return S5_STATE_MONITOR;
+	}
+	if ((got & AVOID_EVT_MOTORS_STOPPED) != 0U) {
 		s_ctx.b_reversing = 0U;
 		return S5_STATE_COARSE_SCAN;
 	}
@@ -357,11 +361,16 @@ LOCAL s5_state_t oa_state_bypass(void)
 		return S5_STATE_WAIT_STOP;
 	}
 
-	er = tk_wai_flg(flg_avoid, AVOID_EVT_LINE_REACQUIRED, TWF_ORW | TWF_BITCLR,
-			&flgptn, (TMO)OA_BYPASS_POLL_MS);
+	er = tk_wai_flg(flg_avoid, AVOID_EVT_LINE_REACQUIRED | AVOID_EVT_ABORT,
+			TWF_ORW | TWF_BITCLR, &flgptn, (TMO)OA_BYPASS_POLL_MS);
 	oa_heartbeat();
 
 	if (er == E_OK) {
+		if ((flgptn & AVOID_EVT_ABORT) != 0U) {
+			/* Mission Control gave up / was stopped: car is idle,
+			   so no CLEAR. Not a fault. */
+			return S5_STATE_MONITOR;
+		}
 		oa_send(OBS_MSG_CLEAR, OBS_PLAN_CONTINUE);
 		return S5_STATE_MONITOR;
 	}
@@ -370,7 +379,7 @@ LOCAL s5_state_t oa_state_bypass(void)
 
 LOCAL s5_state_t oa_state_fault(void)
 {
-	if (oa_wait_avoid_evt(AVOID_EVT_RESUME, OA_WAIT_CHUNK_MS)) {
+	if (oa_wait_avoid_evt(AVOID_EVT_RESUME, OA_WAIT_CHUNK_MS) != 0U) {
 		s_ctx.b_sensor_fault = 0U;
 		s_ctx.no_echo_count  = 0U;
 		return S5_STATE_MONITOR;
@@ -454,6 +463,14 @@ EXPORT void obstacle_task(INT stacd, void *exinf)
 		}
 	}
 #endif
+
+	/* Do not ping until Mission Control is draining obstacle_q. It first
+	   waits up to 10 s for the USB console; an obstacle reported before
+	   then got no MOTORS_STOPPED within OA_STOP_ACK_TIMEOUT_MS and
+	   latched a false TIMEOUT fault at boot. Heartbeat every chunk. */
+	while (oa_wait_avoid_evt(AVOID_EVT_MC_READY, OA_WAIT_CHUNK_MS) == 0U) {
+		/* Waiting for Mission Control. */
+	}
 
 	s_ctx.last_trigger_us = s5_time_us();
 	profile_reset(&s_ctx.prof);

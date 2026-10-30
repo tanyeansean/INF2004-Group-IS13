@@ -49,6 +49,7 @@ EXPORT void s5_bench_task(INT stacd, void *exinf)
 	(void)exinf;
 
 	tm_printf((UB*)"[S5 bench] stand-in Mission Control running\n");
+	(void)tk_set_flg(flg_avoid, AVOID_EVT_MC_READY);	/* obstacle_task waits for it */
 	last_hb_ms = now_ms();
 
 	for (;;) {
