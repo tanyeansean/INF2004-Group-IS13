@@ -145,7 +145,11 @@ LOCAL hcsr04_status_t oa_ping(UB *p_dist_cm)
 	/* NO_ECHO (ECHO never rose) and BUSY (ECHO already high, i.e. stuck)
 	   both mean the sensor is not working: either one, 5 pings in a row,
 	   is a fault. A stuck-high ECHO used to reset the count and hide. */
-	if ((status == HCSR04_NO_ECHO) || (status == HCSR04_BUSY)) {
+	/* TOO_SHORT (only < OA_DIST_MIN_VALID_CM echoes) counts too: now and
+	   then it is noise and is simply ignored, but every ping in a row
+	   means something is stuck in front of / against the sensor. */
+	if ((status == HCSR04_NO_ECHO) || (status == HCSR04_BUSY) ||
+	    (status == HCSR04_TOO_SHORT)) {
 		SAT_INC(s_ctx.no_echo_count, OA_NO_ECHO_LIMIT);
 		if (s_ctx.no_echo_count >= OA_NO_ECHO_LIMIT) {
 #if OA_DEBUG
@@ -158,7 +162,9 @@ LOCAL hcsr04_status_t oa_ping(UB *p_dist_cm)
 				drv_hcsr04_diag(&e, &g, &w);
 				tm_printf((UB *)"[S5 dbg] FAULT: %s %u pings in a row "
 					  "(edges=%u noise=%u)\n",
-					  (status == HCSR04_BUSY) ? "ECHO stuck HIGH" : "no echo",
+					  (status == HCSR04_BUSY) ? "ECHO stuck HIGH" :
+					  (status == HCSR04_TOO_SHORT) ? "echo too short (< min valid cm)"
+								      : "no echo",
 					  (UINT)OA_NO_ECHO_LIMIT, (UINT)e, (UINT)g);
 			}
 #endif
@@ -204,7 +210,9 @@ LOCAL void oa_send(obs_msg_type_t type, obs_plan_t plan)
 /* Clear a stale reply bit BEFORE asking, so an old reply cannot satisfy us. */
 LOCAL void oa_request(UINT reply_bit, obs_msg_type_t type, obs_plan_t plan)
 {
-	(void)tk_clr_flg(flg_avoid, ~reply_bit);
+	/* ABORT too: one left over from an earlier avoid must not cancel
+	   this new request. */
+	(void)tk_clr_flg(flg_avoid, ~(reply_bit | AVOID_EVT_ABORT));
 	oa_send(type, plan);
 }
 
@@ -223,7 +231,11 @@ LOCAL void oa_sweep(UB start_deg, UB step_deg, UB end_deg)
 	     angle += step_deg) {
 		dist_cm = (UB)OA_DIST_OUT_OF_RANGE;
 		oa_servo_move((UB)angle);
-		(void)oa_ping(&dist_cm);
+		if (oa_ping(&dist_cm) == HCSR04_TOO_SHORT) {
+			/* Noise: one more try, so a bad ping does not leave a
+			   false "open" (255) point in the profile. */
+			(void)oa_ping(&dist_cm);
+		}
 
 		s_ctx.scan.dist_cm[s_ctx.scan.count] = dist_cm;
 		s_ctx.scan.count++;
@@ -457,8 +469,14 @@ EXPORT void obstacle_task(INT stacd, void *exinf)
 			}
 			last_us = s5_time_us();
 			st = drv_hcsr04_measure_cm(&d);
-			tm_printf((UB *)"[probe] period=%u st=%d dist=%u\n",
-				  (UINT)OA_PROBE_PERIOD_MS, (INT)st, (UINT)d);
+			{
+				UW e, g, w;
+
+				drv_hcsr04_diag(&e, &g, &w);
+				/* st: 0 OK, 1 NO_ECHO, 2 BUSY, 3 TOO_SHORT (noise) */
+				tm_printf((UB *)"[probe] st=%d dist=%u width=%uus edges=%u noise=%u\n",
+					  (INT)st, (UINT)d, (UINT)w, (UINT)e, (UINT)g);
+			}
 			oa_heartbeat();
 		}
 	}

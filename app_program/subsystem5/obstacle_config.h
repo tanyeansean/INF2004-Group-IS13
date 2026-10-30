@@ -28,6 +28,11 @@
 #define OA_DIST_MAX_CM		(254U)
 #define OA_DIST_OUT_OF_RANGE	(255U)	/* Only meaning: beyond 254 cm.           */
 #define OA_NO_ECHO_LIMIT	(5U)	/* Consecutive no-echo pings -> fault.    */
+/* TUNE: echoes shorter than this are rejected as noise (false near-field
+   echo / crosstalk, seen on the car as phantom 3-4 cm "obstacles"). The
+   car stops at OA_STOP_DIST_CM, so nothing real is ever this close.
+   Must stay below OA_BYPASS_ABORT_CM. */
+#define OA_DIST_MIN_VALID_CM	(6U)
 
 /* ---------------------------------------------------------------- Detection */
 #define OA_STOP_DIST_CM		(25U)	/* TUNE: obstacle confirmed below this.   */

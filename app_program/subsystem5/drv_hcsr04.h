@@ -16,7 +16,9 @@ typedef enum
 {
 	HCSR04_OK = 0,		/* *p_dist_cm valid (255 = beyond 254 cm)  */
 	HCSR04_NO_ECHO,		/* ECHO never rose: wiring/power/sensor    */
-	HCSR04_BUSY		/* ECHO still high from the previous ping  */
+	HCSR04_BUSY,		/* ECHO still high from the previous ping  */
+	HCSR04_TOO_SHORT	/* only echoes < OA_DIST_MIN_VALID_CM came:
+				   noise, no usable reading this ping       */
 } hcsr04_status_t;
 
 /* Create the driver's event flag. Call from subsystem5_init(). */
