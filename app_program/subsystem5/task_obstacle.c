@@ -21,6 +21,7 @@
 #include "s5_hw.h"
 
 #define US_PER_MS	(1000U)
+#define OA_PROBE_PERIOD_MS	(80U)
 
 #if (OA_PROBE_PIN >= 0)
 #define PROBE_INIT()	do { gpio_set_pin((UINT)OA_PROBE_PIN, GPIO_MODE_OUT);	\
@@ -29,6 +30,11 @@
 #else
 #define PROBE_INIT()	do { } while (0)
 #define PROBE_SET(b)	do { (void)(b); } while (0)
+#endif
+
+//testing stuff
+#ifndef OA_SENSOR_PROBE
+#define OA_SENSOR_PROBE (0)
 #endif
 
 /*
@@ -427,6 +433,27 @@ EXPORT void obstacle_task(INT stacd, void *exinf)
 	CHECK(er, "drv_hcsr04_init");
 	drv_servo_init();
 	PROBE_INIT();
+
+	#if OA_SENSOR_PROBE
+	{
+		UW last_us = s5_time_us();
+
+		for (;;) {
+			UB		d = (UB)OA_DIST_OUT_OF_RANGE;
+			UW const	since_ms = (s5_time_us() - last_us) / 1000U;
+			hcsr04_status_t	st;
+
+			if (since_ms < OA_PROBE_PERIOD_MS) {
+				(void)tk_dly_tsk((TMO)(OA_PROBE_PERIOD_MS - since_ms));
+			}
+			last_us = s5_time_us();
+			st = drv_hcsr04_measure_cm(&d);
+			tm_printf((UB *)"[probe] period=%u st=%d dist=%u\n",
+				  (UINT)OA_PROBE_PERIOD_MS, (INT)st, (UINT)d);
+			oa_heartbeat();
+		}
+	}
+#endif
 
 	s_ctx.last_trigger_us = s5_time_us();
 	profile_reset(&s_ctx.prof);
