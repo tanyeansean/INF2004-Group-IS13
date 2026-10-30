@@ -1,7 +1,9 @@
 # Team and subsystems
 
-The tables are pre-filled with the **example** in `app_program/` (marked
-*example*). Replace those rows with your own as you replace the example code.
+The template's example rows were replaced by the robot car on 29 Oct 2026:
+subsystems 1-3 run the car, ported from the bare-metal `integrated_car/` bench.
+Subsystem 4 is an empty template. Subsystem 5 is compiled but not started
+(`APP_WITH_S5` in `app_program/app.h`) until it is tested.
 
 Fill this in at the start of the project and keep it up to date. It is the
 single place that says **who owns what**, so that five people can work in
@@ -17,11 +19,11 @@ subsystem, ask its owner or open a pull request for them to review.
 
 | # | Subsystem (what it does) | Student ID | GitHub username | Code | Tests |
 |---|---|---|---|---|---|
-| 1 | *example:* LED heartbeat on GP19 | | | `app_program/subsystem1/` | `testing/subsystem1/` |
-| 2 | *example:* Producer: makes a sample every 300 ms | | | `app_program/subsystem2/` | `testing/subsystem2/` |
-| 3 | *example:* Consumer: collects samples into statistics | | | `app_program/subsystem3/` | `testing/subsystem3/` |
-| 4 | *example:* Monitor: prints reports, pauses the LED | | | `app_program/subsystem4/` | `testing/subsystem4/` |
-| 5 | | | | `app_program/subsystem5/` | `testing/subsystem5/` |
+| 1 | Telemetry: packed MQTT live data, events, commands, barcode map (Buddy 1, Aurelius Ng Ker Fong) | 2500612 | | `app_program/subsystem1/` | `testing/subsystem1/` |
+| 2 | Mission Control + Motor Control: steering, junction stop / turns, start / stop, PWM (Buddy 2, Tan Yean Sean) | 2500224 | tanyeansean | `app_program/subsystem2/` | `testing/subsystem2/` |
+| 3 | Line Follow + Barcode Decode: front IR pair, Code 39 barcode (Buddy 3, Wong Yong Quan; logic in `track_purist/`) | 2500377 | yongquan1337 | `app_program/subsystem3/` | `testing/subsystem3/`, `track_purist/test/` |
+| 4 | IMU / terrain (Buddy 4, Lim Jin Hin): empty template | 2500928 | | `app_program/subsystem4/` | `testing/subsystem4/` |
+| 5 | Obstacle Avoid (Buddy 5, Joe Teo Wei Xuan): code in repo, not started yet | 2500177 | | `app_program/subsystem5/` | `testing/subsystem5/` |
 
 Shared files (`app_program/app_main.c`, `app_program/app.h`, this file)
 are changed only by agreement of the team. The exception is claiming an empty
@@ -52,27 +54,27 @@ fixed.
 | GP1 | | (taken whenever the team builds with `CRASH_REPORT=1`) |
 | GP2 | | |
 | GP3 | | |
-| GP4 | | |
-| GP5 | | |
+| GP4 | S5 | HC-SR04 TRIG (S5 not started yet) |
+| GP5 | S5 | HC-SR04 ECHO, edge interrupt (S5 not started yet) |
 | GP6 | | |
-| GP7 | | |
-| GP8 | | |
-| GP9 | | |
-| GP10 | | |
-| GP11 | | |
-| GP12 | | |
+| GP7 | S3 | barcode IR digital out (D0), both-edge interrupt, pull-up |
+| GP8 | S2 | motor M1A (left wheel), PWM slice 4A |
+| GP9 | S2 | motor M1B (left wheel), PWM slice 4B |
+| GP10 | S2 | motor M2A (right wheel), PWM slice 5A |
+| GP11 | S2 | motor M2B (right wheel), PWM slice 5B |
+| GP12 | S5 | servo PWM (S5 not started yet) |
 | GP13 | | |
 | GP14 | | |
 | GP15 | | |
 | GP16 | | |
 | GP17 | | |
 | GP18 | | |
-| GP19 | *example:* S1 | external LED (LED + 330 Ω to GND) |
-| GP20 | | |
+| GP19 | | |
+| GP20 | S2 | Robo Pico button: start / stop (active low, pull-up) |
 | GP21 | | |
 | GP22 | | |
-| GP26 | | (ADC0 capable) |
-| GP27 | | (ADC1 capable) |
+| GP26 | S3 | right front IR, ADC0 |
+| GP27 | S3 | left front IR, ADC1 |
 | GP28 | | (ADC2 capable) |
 
 ## 3. Peripherals
@@ -110,8 +112,10 @@ the drivers have no locking to stop it.
 | I2C1 | | | |
 | SPI0 | | | |
 | SPI1 | | | |
-| ADC | | | GP26–GP28 |
-| PWM slices (list) | | | |
+| ADC (kernel driver `adca`) | S3 | `line_task` | GP26, GP27 |
+| PWM slices 4, 5 | S2 | `motor_task` | GP8–GP11 (10 kHz, wrap 255) |
+| GPIO interrupt IO_IRQ_BANK0 (IRQ 13, only one `tk_def_int`) | S3 (handler in `drv_track.c`) | ISR, enabled by `barcode_task` on core 0 | GP7 now. S5's GP5 echo and S2's encoders must be added to this handler, not registered again |
+| TIMER (1 µs counter, read only) | S3 starts it | any task may read | – |
 | WiFi radio, TCP/IP, MQTT | *kernel* | `cyw43_utk_task` (built in) | GP23–25, GP29 |
 
 ### WiFi and MQTT are special
@@ -139,6 +143,12 @@ What students *can* do:
   the instructor first**, and record it as an interface in section 5.
   It needs the `NET=lwip MQTT=1` build (README section 3).
 
+  **Done for the car (IF-06):** `mqtt_utk.c` calls optional `app_mqtt_*()`
+  hooks that subsystem 1 provides in `s1_mqtt_bridge.c`. They run inside
+  the service task and only move bytes through two S1 message buffers
+  (`mbf_mqtt_tx`, `mbf_mqtt_rx`), with zero-timeout calls on both sides.
+  Without the hooks the client still runs its heartbeat demo.
+
 ## 4. Task priorities
 
 1 is the highest. 1–4 are used by the kernel (USB console 3, WiFi 4). Each subsystem gets its own band by default;
@@ -146,11 +156,14 @@ change it only by team agreement. Write down every task you create.
 
 | Subsystem | Priority band | Tasks (name – priority – core) |
 |---|---|---|
-| 1 | 12–13 | *example:* led_task – 12 – any |
-| 2 | 14–15 | *example:* producer_task – 14 – core 1 |
-| 3 | 16–17 | *example:* consumer_task – 16 – core 0 |
-| 4 | 18–19 | *example:* monitor_task – 18 – any |
-| 5 | 20–21 | |
+| 3 | 12–13 | line_task – 12 – core 1; barcode_task – 13 – core 0 |
+| 2 | 14–15 | motor_task – 14 – core 1; mission_task – 15 – core 1 |
+| 1 | 16–17 | telemetry_task – 16 – core 0 |
+| 4 | 18–19 | |
+| 5 | 20–21 | obstacle_task – 20 – core 0 (not started) |
+
+The bands of subsystems 1 and 3 are swapped (29 Oct): Telemetry must be
+the lowest application priority (NFR5), and the 5 ms line sensing the highest.
 
 Core: `TP_PRC1` = core 0, `TP_PRC2` = core 1, or "any".
 
@@ -162,12 +175,14 @@ sends to it or waits on it. Agree on the data format before coding.
 
 | ID | From → To | Mechanism | Object ID name | Data / meaning | Agreed by |
 |---|---|---|---|---|---|
-| IF-01 | S2 → S3 | mailbox (owned by S3) | `mbx_samples` | `SAMPLE_MSG` in `subsystem2.h` | *example* |
-| IF-02 | S3 → S2 | semaphore + fixed memory pool (owned by S2) | `sem_slots`, `mpf_samples` | receiver returns the block, then 1 slot | *example* |
-| IF-03 | S3 → S4 | message buffer + event flag (owned by S4) | `mbf_summary`, `flg_events` | text line ≤ `S4_SUMMARY_MAX` bytes, then `FLG_BATCH` | *example* |
-| IF-04 | S4 → S3 | shared data under a mutex (owned by S3) | `app_stats`, `mtx_stats` | `APP_STATS`, read only while locked | *example* |
-| IF-05 | S4 → S1 | task control | `tid_led` | `tk_sus_tsk` / `tk_rsm_tsk` / `tk_chg_pri` | *example* |
-| IF-06 | | | | | |
+| IF-01 | S3 → S2 | message buffer (owned by S2) | `mbf_line_err` | `line_err_t` (`track_types.h`): 15 bits in 2 bytes, every 5 ms | Buddies 2, 3 |
+| IF-02 | S3 → S2 | message buffer (owned by S2) | `mbf_barcode` | `barcode_t`: 1 byte per VALID or INVALID read | Buddies 2, 3 |
+| IF-03 | S2 → S3 | event flag (owned by S3) | `flg_s3` | `S3_FLG_LINE_RESET`: reset the junction / last-side state (on START) | Buddies 2, 3 |
+| IF-04 | S1 → S2 | message buffer (owned by S2) | `mbf_cmd` | `comms_cmd_t`: 1 byte (type 3 bits + arg 5 bits) | Buddies 1, 2 |
+| IF-05 | S2 → S1 | message buffer (owned by S1) | `mbf_status` | 16-bit packed state / line / barcode / junction (`subsystem1.h`) | Buddies 1, 2 |
+| IF-06 | S1 ↔ kernel WiFi task | message buffers (owned by S1) + `app_mqtt_*()` hooks | `mbf_mqtt_tx`, `mbf_mqtt_rx` | MQTT publish / receive (`s1_mqtt_bridge.c`, `mqtt_utk.c`) | Buddy 1; instructor OK given |
+| IF-07 | all → S1 | event flag (owned by S1) | `flg_hb` | heartbeat bits `HB_*` (`hb_bits.h`); the Safety Monitor that reads them is not built yet | all |
+| IF-08 | S1 writes, S2 reads | shared data, one aligned 32-bit word | `g_nav_map` (defined in S2) | barcode map: `nav_map_apply()` / `nav_map_snapshot()` (`nav_cmd.h`) | Buddies 1, 2, 3 |
 
 Each interface is tested by at least one integration test
 (`testing/integration/TEST_LOG.md`).
@@ -175,19 +190,20 @@ Each interface is tested by at least one integration test
 ## 6. Kernel object budget
 
 Limits are set in `config/config.h`. If the team needs more, raise the
-limit there. The numbers below are the example's usage.
+limit there. Subsystem 5's objects are not created while `APP_WITH_S5` = 0
+(in brackets: its stand-alone bench objects).
 
 | Object | Limit | S1 | S2 | S3 | S4 | S5 |
 |---|---|---|---|---|---|---|
-| Task | 32 | 1 | 1 | 1 | 1 | |
-| Semaphore | 16 | | 1 | | | |
-| Event flag | 16 | | | | 1 | |
-| Mailbox | 12 | | | 1 | | |
-| Mutex | 12 | | | 1 | | |
-| Message buffer | 12 | | | | 1 | |
-| Fixed memory pool | 12 | | 1 | | | |
+| Task | 32 | 1 | 2 | 2 | | 1 (+1) |
+| Semaphore | 16 | | | | | |
+| Event flag | 16 | 1 | | 1 | | 2 (+2) |
+| Mailbox | 12 | | | | | |
+| Mutex | 12 | | | | | |
+| Message buffer | 12 | 3 | 4 | | | (+1) |
+| Fixed memory pool | 12 | | | | | |
 | Variable memory pool | 12 | | | | | |
-| Cyclic handler | 12 | 1 | | | | |
-| Alarm handler | 12 | | | | 1 | |
+| Cyclic handler | 12 | | | | | |
+| Alarm handler | 12 | | | | | |
 
 (The kernel's USB and WiFi service tasks also use a few of these.)

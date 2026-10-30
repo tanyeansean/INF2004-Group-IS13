@@ -20,7 +20,7 @@ RM := rm -rf
 # the default goal and quietly leave the image stale.
 .DEFAULT_GOAL := all
 
-INCPATH = -I"../include" -I"../config" -I"../kernel/knlinc"
+INCPATH = -I"../include" -I"../config" -I"../kernel/knlinc" -I"../track_purist/include"
 
 -include sources.mk
 
@@ -54,6 +54,7 @@ include pico_rp2040.mk
 endif
 
 -include mtkernel_3/app_program/subdir.mk
+include mtkernel_3/track_purist/subdir.mk
 
 # Create every object directory up front.  Git does not store empty
 # directories, so a fresh clone lacks them, and not every compile rule

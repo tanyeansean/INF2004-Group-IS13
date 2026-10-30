@@ -136,8 +136,10 @@ line_err_t line_follow_step(const line_follow_cfg_t *cfg,
         state->last_side = LINE_SIDE_RIGHT;
     }
 
-    return line_err_with_last_side(line_err_pack(error, junction, lost),
-                                   state->last_side);
+    return line_err_with_sensors(
+               line_err_with_last_side(line_err_pack(error, junction, lost),
+                                       state->last_side),
+               left_black, center_black);
 }
 
 /* ------------------------------------------------------------------ */

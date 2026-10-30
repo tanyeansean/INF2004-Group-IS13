@@ -61,9 +61,12 @@
      both black (junction flag) -> stop (when JUNCTION_STOPS = 1)       */
 /* Per-wheel base PWM (0..255). Set different values if one wheel runs
    faster than the other. "speed N" keeps this M1:M2 ratio. */
-#define BASE_PWM_M1         30
-#define BASE_PWM_M2         30
-#define STEER_DELTA         15   /* one wheel +15, other -15 on a gentle turn */
+#define BASE_PWM_M1         35
+#define BASE_PWM_M2         36   /* trim only, not measured: M1 pulls stronger than M2 */
+#define STEER_DELTA         22   /* one wheel +22, other -22 on a gentle turn */
+#define STEER_HOLD_MS      150u  /* when the line sits between the sensors, keep
+                                    steering this long after it was last under one
+                                    sensor (bend recovery); 0 = old bang-bang   */
 /* Which way to steer when ONE sensor sees black. 1 = speed up the wheel on
    the black sensor's side (turn away from it); 0 = slow that wheel down.
    Set from the car's real behaviour on the track. */
@@ -126,6 +129,7 @@ static int16_t    g_base_m2 = BASE_PWM_M2;
 #endif
 static bool       g_comms_ok = false;
 static int16_t    g_out_l, g_out_r;  /* last PWM sent while following (status line) */
+static uint32_t   g_hold_until_ms;   /* end of the steer-hold window (0 = none)  */
 static uint8_t    g_lb, g_rb;        /* last left/right "on black" flags (status line) */
 
 static uint32_t   g_man_end_ms;      /* end of the current maneuver step   */
@@ -152,6 +156,7 @@ static void car_stop(robot_state_t why)
 {
     motor_stop();
     g_mode = CAR_IDLE;
+    g_hold_until_ms = 0;
     if (g_comms_ok) { telem_set_state(why); }
 }
 
@@ -164,6 +169,7 @@ static void car_start(line_follow_state_t *ls)
         return;
     }
     line_follow_reset(ls);
+    g_hold_until_ms = 0;
     g_mode = CAR_FOLLOW;
     if (g_comms_ok) { telem_set_state(ROBOT_LINE_FOLLOW); }
     printf("[car] START (base PWM M1=%d M2=%d)\n", g_base_m1, g_base_m2);
@@ -208,6 +214,7 @@ static void maneuver_step(line_follow_state_t *ls)
     }
     /* done: back to line following */
     line_follow_reset(ls);
+    g_hold_until_ms = 0;
     g_mode = CAR_FOLLOW;
     if (g_comms_ok) { telem_set_state(ROBOT_LINE_FOLLOW); }
 }
@@ -525,14 +532,34 @@ int main(void)
                     car_stop(ROBOT_STOPPED);
                     printf("[car] JUNCTION (both black) - stopped. Send start to go again.\n");
                 } else {
-                    /* +1: line under LEFT sensor, -1: under RIGHT, 0: centred */
-                    int16_t side = (l_blk && !r_blk) ? 1 : ((r_blk && !l_blk) ? -1 : 0);
+                    /* +1: line under LEFT sensor, -1: under RIGHT, 0: centred.
+                       Both sensors white = line between them (normal on a
+                       curve). Rather than snapping straight, hold the last
+                       direction for STEER_HOLD_MS so the car carries the
+                       bend; last_side comes from line_follow_step(). */
+                    int16_t side;
+                    if (l_blk && !r_blk) {
+                        side = 1;
+                        g_hold_until_ms = t + STEER_HOLD_MS;
+                    } else if (r_blk && !l_blk) {
+                        side = -1;
+                        g_hold_until_ms = t + STEER_HOLD_MS;
+                    } else if (!l_blk && !r_blk) {
+                        side = ((int32_t)(t - g_hold_until_ms) < 0)
+                             ? ((line_err_get_last_side(le) == LINE_SIDE_LEFT) ? 1 : -1)
+                             : 0;
+                    } else {
+                        side = 0;   /* both black: crossing, no steering */
+                    }
 #if STEER_INVERT
                     side = (int16_t)-side;
 #endif
                     /* side = +1 -> left wheel slower, right faster (and vice versa) */
                     g_out_l = (int16_t)(BASE_LEFT  - side * STEER_DELTA);
                     g_out_r = (int16_t)(BASE_RIGHT + side * STEER_DELTA);
+                    /* never reverse a wheel by steering: coast instead */
+                    if (g_out_l < 0) { g_out_l = 0; }
+                    if (g_out_r < 0) { g_out_r = 0; }
                     motor_set(g_out_l, g_out_r);
                 }
 #else

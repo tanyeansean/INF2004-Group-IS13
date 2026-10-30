@@ -16,22 +16,17 @@
  *	and then puts the initial task to sleep forever.
  *	If usermain() RETURNS, the kernel shuts the whole system down.
  *
- *	The example system: one subsystem per folder, one task each
+ *	The robot car: one subsystem per buddy (TEAM.md section 1)
  *	------------------------------------------------------------
- *	  subsystem1/  LED       blinks GP19, paced by a cyclic handler
- *	  subsystem2/  Producer  makes a "sample" every 300 ms     (core 1)
- *	  subsystem3/  Consumer  collects samples into statistics  (core 0)
- *	  subsystem4/  Monitor   prints reports, pauses/resumes the LED
- *	  subsystem5/  (empty template for the fifth student)
+ *	  subsystem1/  Telemetry (Buddy 1, Aurelius): packs live data and
+ *	               events, hands them to the kernel's MQTT client
+ *	  subsystem2/  Mission Control + Motor Control (Buddy 2, Sean)
+ *	  subsystem3/  Line Follow + Barcode Decode (Buddy 3, Yong Quan)
+ *	  subsystem4/  (empty template, Buddy 4, Jin Hin)
+ *	  subsystem5/  Obstacle Avoid (Buddy 5, Joe).  Compiled, but NOT
+ *	               started unless built with APP_WITH_S5=1 (untested).
  *
- *	How they talk to each other (the interfaces, see TEAM.md section 5):
- *	  IF-01  S2 -> S3  mailbox mbx_samples      (owned by S3)
- *	  IF-02  S3 -> S2  semaphore sem_slots + memory pool mpf_samples
- *	                   (owned by S2: S3 hands slots and blocks back)
- *	  IF-03  S3 -> S4  message buffer mbf_summary + event flag flg_events
- *	                   (owned by S4)
- *	  IF-04  S4 -> S3  reads app_stats under mutex mtx_stats (owned by S3)
- *	  IF-05  S4 -> S1  suspends/resumes the LED task tid_led (owned by S1)
+ *	How they talk to each other: TEAM.md section 5 (IF-01 ...).
  *	The subsystem that RECEIVES or OWNS the data creates the object and
  *	publishes its ID in its header; the other side just uses it.
  *
@@ -112,14 +107,18 @@ EXPORT INT usermain(void)
 	CHECK(subsystem2_init(), "subsystem2_init");
 	CHECK(subsystem3_init(), "subsystem3_init");
 	CHECK(subsystem4_init(), "subsystem4_init");
+#if APP_WITH_S5
 	CHECK(subsystem5_init(), "subsystem5_init");
+#endif
 
 	/* Phase 2: every subsystem starts its tasks */
 	CHECK(subsystem1_start(), "subsystem1_start");
 	CHECK(subsystem2_start(), "subsystem2_start");
 	CHECK(subsystem3_start(), "subsystem3_start");
 	CHECK(subsystem4_start(), "subsystem4_start");
+#if APP_WITH_S5
 	CHECK(subsystem5_start(), "subsystem5_start");
+#endif
 
 	tm_printf((UB*)"all subsystems started\n\n");
 
@@ -132,7 +131,9 @@ EXPORT INT usermain(void)
 	subsystem2_test();
 	subsystem3_test();
 	subsystem4_test();
+#if APP_WITH_S5
 	subsystem5_test();
+#endif
 	tm_printf((UB*)"[TEST] === test run end ===\n");
 #endif
 

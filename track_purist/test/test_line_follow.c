@@ -224,7 +224,9 @@ int main(void)
         r = line_follow_step(&c, &st, &s);
         CHECK_EQ_INT(line_err_get_last_side(r), LINE_SIDE_LEFT, "left black => last_side LEFT");
         CHECK(!(r.packed & LINE_LAST_SIDE_BIT), "bit 12 clear for LEFT");
-        CHECK_EQ_INT(r.packed & 0xE000u, 0, "bits 13..15 stay 0");
+        CHECK_EQ_INT(r.packed & 0x8000u, 0, "bit 15 stays 0");
+        CHECK_EQ_INT(line_err_get_left_black(r), 1, "left black => bit 13 set");
+        CHECK_EQ_INT(line_err_get_right_black(r), 0, "right white => bit 14 clear");
     }
 
     /* --- default (lost_timeout_ms = 0): long straight never reports lost --- */

@@ -110,12 +110,12 @@ static inline barcode_t barcode_invalid(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* line_err_q message: 13 bits packed in one uint16_t                  */
+/* line_err_q message: 15 bits packed in one uint16_t                  */
 /* ------------------------------------------------------------------ */
 /**
  * Packed line-following result published to line_err_q every 5 ms.
  *
- * Layout inside a uint16_t (13 bits used, 3 bits reserved):
+ * Layout inside a uint16_t (15 bits used, 1 bit reserved):
  *   bits 0..9   : error     (10-bit signed, two's complement, -512..+511;
  *                            +ve = line under LEFT sensor, -ve = under
  *                            RIGHT sensor, 0 = centred / both white)
@@ -125,7 +125,12 @@ static inline barcode_t barcode_invalid(void)
  *   bit  12     : last_side (0 = LEFT sensor last saw the line,
  *                            1 = RIGHT sensor last saw it; use it to
  *                            steer back if both go white after a bend)
- *   bits 13..15 : reserved (keep 0)
+ *   bit  13     : left_black  (1 = left front sensor over black now)
+ *   bit  14     : right_black (1 = right front sensor over black now)
+ *                 Mission Control's straddle steering uses these two
+ *                 thresholded flags, not the error (the error has a
+ *                 calibration offset when both sensors read white).
+ *   bit  15     : reserved (keep 0)
  */
 typedef struct {
     uint16_t packed;
@@ -137,6 +142,8 @@ typedef struct {
 #define LINE_JUNCTION_BIT    (1u << 10)
 #define LINE_LOST_BIT        (1u << 11)
 #define LINE_LAST_SIDE_BIT   (1u << 12)
+#define LINE_LEFT_BLACK_BIT  (1u << 13)
+#define LINE_RIGHT_BLACK_BIT (1u << 14)
 
 #define LINE_SIDE_LEFT       0u
 #define LINE_SIDE_RIGHT      1u
@@ -200,6 +207,28 @@ static inline line_err_t line_err_with_last_side(line_err_t l, uint8_t side)
 static inline uint8_t line_err_get_last_side(line_err_t l)
 {
     return (uint8_t)((l.packed & LINE_LAST_SIDE_BIT) ? 1u : 0u);
+}
+
+/** Return l with the two sensor flags (bits 13, 14) set from left/right. */
+static inline line_err_t line_err_with_sensors(line_err_t l, uint8_t left_black,
+                                               uint8_t right_black)
+{
+    l.packed = (uint16_t)(l.packed &
+                          (uint16_t)~(LINE_LEFT_BLACK_BIT | LINE_RIGHT_BLACK_BIT));
+    l.packed = (uint16_t)(l.packed
+             | (left_black  ? LINE_LEFT_BLACK_BIT  : 0u)
+             | (right_black ? LINE_RIGHT_BLACK_BIT : 0u));
+    return l;
+}
+
+static inline uint8_t line_err_get_left_black(line_err_t l)
+{
+    return (uint8_t)((l.packed & LINE_LEFT_BLACK_BIT) ? 1u : 0u);
+}
+
+static inline uint8_t line_err_get_right_black(line_err_t l)
+{
+    return (uint8_t)((l.packed & LINE_RIGHT_BLACK_BIT) ? 1u : 0u);
 }
 
 /* ------------------------------------------------------------------ */
