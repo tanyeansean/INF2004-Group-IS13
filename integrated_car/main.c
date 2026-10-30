@@ -61,12 +61,18 @@
      both black (junction flag) -> stop (when JUNCTION_STOPS = 1)       */
 /* Per-wheel base PWM (0..255). Set different values if one wheel runs
    faster than the other. "speed N" keeps this M1:M2 ratio. */
-#define BASE_PWM_M1         35
-#define BASE_PWM_M2         36   /* trim only, not measured: M1 pulls stronger than M2 */
-#define STEER_DELTA         22   /* one wheel +22, other -22 on a gentle turn */
-#define STEER_HOLD_MS      150u  /* when the line sits between the sensors, keep
-                                    steering this long after it was last under one
-                                    sensor (bend recovery); 0 = old bang-bang   */
+#define BASE_PWM_M1         36
+#define BASE_PWM_M2         36   /* same as M1: no trim, both wheels equal */
+/* Steering.  The steer term is a PWM offset applied + to one wheel and - to
+   the other; positive = left wheel slower (turn left).  It is proportional
+   to the line error, so a small offset gets a small correction (no
+   left-right wobble) and only a large one saturates (still holds a bend). */
+#define STEER_MAX           36   /* clamp on |steer| = max one-wheel offset  */
+#define STEER_ERR_DIV       14   /* steer = err/14; err is +-511 -> +-36     */
+#define STEER_HOLD_LEVEL    16   /* light steer kept while the line sits
+                                    between the sensors, inside the hold     */
+#define STEER_HOLD_MS       80u  /* how long that hold lasts after the line
+                                    was last under a sensor; 0 = none        */
 /* Which way to steer when ONE sensor sees black. 1 = speed up the wheel on
    the black sensor's side (turn away from it); 0 = slow that wheel down.
    Set from the car's real behaviour on the track. */
@@ -524,7 +530,6 @@ int main(void)
 
             if (g_mode == CAR_FOLLOW) {
 #if STEERING_ENABLED
-                (void)err;
                 if (line_err_get_lost(le)) {
                     car_stop(ROBOT_LINE_RECOVERY);
                     printf("[car] line data unusable - stopped\n");
@@ -532,31 +537,41 @@ int main(void)
                     car_stop(ROBOT_STOPPED);
                     printf("[car] JUNCTION (both black) - stopped. Send start to go again.\n");
                 } else {
-                    /* +1: line under LEFT sensor, -1: under RIGHT, 0: centred.
-                       Both sensors white = line between them (normal on a
-                       curve). Rather than snapping straight, hold the last
-                       direction for STEER_HOLD_MS so the car carries the
-                       bend; last_side comes from line_follow_step(). */
-                    int16_t side;
+                    /* Proportional steer.  err is +-511: 0 = line centred
+                       between the sensors, + = line under the LEFT sensor.
+                       A small offset gets a small correction; only a large
+                       one saturates, which is what holds a bend.  When both
+                       sensors are white the line is in the gap: keep a light
+                       steer for STEER_HOLD_MS so a curve is carried instead
+                       of snapping straight. last_side comes from
+                       line_follow_step(). */
+                    int16_t steer;
                     if (l_blk && !r_blk) {
-                        side = 1;
+                        steer = STEER_MAX;
                         g_hold_until_ms = t + STEER_HOLD_MS;
                     } else if (r_blk && !l_blk) {
-                        side = -1;
+                        steer = -STEER_MAX;
                         g_hold_until_ms = t + STEER_HOLD_MS;
                     } else if (!l_blk && !r_blk) {
-                        side = ((int32_t)(t - g_hold_until_ms) < 0)
-                             ? ((line_err_get_last_side(le) == LINE_SIDE_LEFT) ? 1 : -1)
-                             : 0;
+                        /* line in the gap: carry the bend briefly, else
+                           fall back to the proportional term */
+                        if ((int32_t)(t - g_hold_until_ms) < 0) {
+                            steer = (line_err_get_last_side(le) == LINE_SIDE_LEFT)
+                                  ? STEER_HOLD_LEVEL : -STEER_HOLD_LEVEL;
+                        } else {
+                            steer = (int16_t)(err / STEER_ERR_DIV);
+                        }
                     } else {
-                        side = 0;   /* both black: crossing, no steering */
+                        steer = 0;   /* both black: crossing, no steering */
                     }
 #if STEER_INVERT
-                    side = (int16_t)-side;
+                    steer = (int16_t)-steer;
 #endif
-                    /* side = +1 -> left wheel slower, right faster (and vice versa) */
-                    g_out_l = (int16_t)(BASE_LEFT  - side * STEER_DELTA);
-                    g_out_r = (int16_t)(BASE_RIGHT + side * STEER_DELTA);
+                    if (steer >  STEER_MAX) { steer =  STEER_MAX; }
+                    if (steer < -STEER_MAX) { steer = -STEER_MAX; }
+                    /* steer > 0 -> left wheel slower, right faster */
+                    g_out_l = (int16_t)(BASE_LEFT  - steer);
+                    g_out_r = (int16_t)(BASE_RIGHT + steer);
                     /* never reverse a wheel by steering: coast instead */
                     if (g_out_l < 0) { g_out_l = 0; }
                     if (g_out_r < 0) { g_out_r = 0; }
@@ -592,8 +607,10 @@ int main(void)
         if ((int32_t)(t - next_print_ms) >= 0) {
             uint8_t pend = 0;
             next_print_ms += 500u;
-            printf("mode=%u L=%c R=%c err=%4d jn=%u lost=%u pending=%c pwm=%d/%d link=%s\n",
+            printf("mode=%u L=%c R=%c adc=%4u/%4u thr=%4u/%4u err=%4d jn=%u lost=%u pending=%c pwm=%d/%d link=%s\n",
                    (unsigned)g_mode, g_lb ? 'B' : 'W', g_rb ? 'B' : 'W',
+                   read_left(), read_right(),
+                   cfg.left_threshold, cfg.center_threshold,
                    line_err_get_error(le), line_err_get_junction(le),
                    line_err_get_lost(le),
                    nav_has_pending(&nav, &pend) ? (char)('A' + pend) : '-',

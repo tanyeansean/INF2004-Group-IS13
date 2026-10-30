@@ -39,7 +39,7 @@
    its code is not tested on the car yet.  Set to 1 here (team agreement)
    to start it. */
 #ifndef APP_WITH_S5
-#define APP_WITH_S5		1
+#define APP_WITH_S5		0
 #endif
 
 /* Create and start a task.  prc = TP_PRC1 (core 0), TP_PRC2 (core 1), or

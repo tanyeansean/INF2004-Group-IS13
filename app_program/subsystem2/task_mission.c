@@ -3,11 +3,10 @@
  *	Subsystem 2 -- Mission Control task.  Port of the car logic in
  *	integrated_car/main.c v0.8 (same rules, same numbers):
  *
- *	  both white          -> straight          PWM 35 / 36
- *	  both white, <= 150 ms since one sensor last saw the line
- *	                      -> hold the last turn (bend recovery)
- *	  right black         -> turn right        57 / 14
- *	  left black          -> turn left         13 / 58
+ *	  both white          -> straight          PWM 36 / 36
+ *	  both white, <= 80 ms since one sensor last saw the line
+ *	                      -> light steer, +-16 (bend recovery)
+ *	  one sensor black    -> steer up to +-36, scaled by err/14
  *	  both black >= 30 ms -> junction: STOP (JUNCTION_STOPS = 1), or the
  *	                         timed barcode turn (JUNCTION_STOPS = 0)
  *	  lost (uncalibrated) -> stop
@@ -33,11 +32,14 @@
 #ifndef STEERING_ENABLED
 #define STEERING_ENABLED	1
 #endif
-#define BASE_PWM_M1		35
-#define BASE_PWM_M2		36	/* trim: M1 pulls stronger than M2 (not measured) */
-#define STEER_DELTA		22
-#define STEER_HOLD_MS		150U	/* keep steering this long after the line
-					   was last under one sensor; 0 = off */
+#define BASE_PWM_M1		36
+#define BASE_PWM_M2		36	/* same as M1: no trim, both wheels equal */
+#define STEER_MAX		36	/* clamp on |steer| = max one-wheel offset */
+#define STEER_ERR_DIV		14	/* steer = err/14; err is +-511 -> +-36 */
+#define STEER_HOLD_LEVEL	16	/* light steer kept while the line sits
+					   between the sensors, inside the hold */
+#define STEER_HOLD_MS		80U	/* how long that hold lasts after the
+					   line was last under a sensor; 0 = none */
 #ifndef STEER_INVERT
 #define STEER_INVERT		0	/* verified on car: right black -> turn right */
 #endif
@@ -638,30 +640,37 @@ LOCAL void on_line(line_err_t le)
 			car_stop(ROBOT_STOPPED);
 			tm_printf((UB *)"[car] JUNCTION (both black) - stopped. Send start to go again.\n");
 		} else {
-			/* +1: line under LEFT sensor, -1: under RIGHT, 0: centred.
-			   Both sensors white = line between them (normal on a
-			   curve). Rather than snapping straight, hold the last
-			   direction for STEER_HOLD_MS so the car carries the bend;
-			   last_side comes from line_follow_step(). */
-			H side;
+			/* Proportional steer.  err is +-511: 0 = line centred
+			   between the sensors, + = line under the LEFT sensor.
+			   A small offset gets a small correction; only a large one
+			   saturates, which is what holds a bend.  When both are
+			   white the line is in the gap: keep a light steer for
+			   STEER_HOLD_MS so a curve is carried. */
+			H steer;
 			if (l_blk && !r_blk) {
-				side = 1;
+				steer = STEER_MAX;
 				g_hold_until_ms = now_ms() + STEER_HOLD_MS;
 			} else if (r_blk && !l_blk) {
-				side = -1;
+				steer = -STEER_MAX;
 				g_hold_until_ms = now_ms() + STEER_HOLD_MS;
 			} else if (!l_blk && !r_blk) {
-				side = ((W)(now_ms() - g_hold_until_ms) < 0)
-				     ? ((line_err_get_last_side(le) == LINE_SIDE_LEFT) ? 1 : -1)
-				     : 0;
+				if ((W)(now_ms() - g_hold_until_ms) < 0) {
+					steer = (line_err_get_last_side(le) == LINE_SIDE_LEFT)
+					      ? STEER_HOLD_LEVEL : -STEER_HOLD_LEVEL;
+				} else {
+					steer = (H)(err / STEER_ERR_DIV);
+				}
 			} else {
-				side = 0;	/* both black: crossing, no steering */
+				steer = 0;	/* both black: crossing, no steering */
 			}
 #if STEER_INVERT
-			side = (H)-side;
+			steer = (H)-steer;
 #endif
-			g_out_l = (H)(BASE_LEFT  - side * STEER_DELTA);
-			g_out_r = (H)(BASE_RIGHT + side * STEER_DELTA);
+			if (steer >  STEER_MAX) { steer =  STEER_MAX; }
+			if (steer < -STEER_MAX) { steer = -STEER_MAX; }
+			/* steer > 0 -> left wheel slower, right faster */
+			g_out_l = (H)(BASE_LEFT  - steer);
+			g_out_r = (H)(BASE_RIGHT + steer);
 			/* never reverse a wheel by steering: coast instead */
 			if (g_out_l < 0) { g_out_l = 0; }
 			if (g_out_r < 0) { g_out_r = 0; }
