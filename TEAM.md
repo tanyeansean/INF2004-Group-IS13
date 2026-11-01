@@ -2,7 +2,7 @@
 
 The template's example rows were replaced by the robot car on 29 Oct 2026:
 subsystems 1-3 run the car, ported from the bare-metal `integrated_car/` bench.
-Subsystem 4 is an empty template. Subsystem 5 is compiled but not started
+Subsystem 4 reads the IMU and prints humps; its links to the car are not added yet. Subsystem 5 is compiled but not started
 (`APP_WITH_S5` in `app_program/app.h`) until it is tested.
 
 Fill this in at the start of the project and keep it up to date. It is the
@@ -22,7 +22,7 @@ subsystem, ask its owner or open a pull request for them to review.
 | 1 | Telemetry: packed MQTT live data, events, commands, barcode map (Buddy 1, Aurelius Ng Ker Fong) | 2500612 | | `app_program/subsystem1/` | `testing/subsystem1/` |
 | 2 | Mission Control + Motor Control: steering, junction stop / turns, start / stop, PWM (Buddy 2, Tan Yean Sean) | 2500224 | tanyeansean | `app_program/subsystem2/` | `testing/subsystem2/` |
 | 3 | Line Follow + Barcode Decode: front IR pair, Code 39 barcode (Buddy 3, Wong Yong Quan; logic in `track_purist/`) | 2500377 | yongquan1337 | `app_program/subsystem3/` | `testing/subsystem3/`, `track_purist/test/` |
-| 4 | IMU / terrain (Buddy 4, Lim Jin Hin): empty template | 2500928 | | `app_program/subsystem4/` | `testing/subsystem4/` |
+| 4 | IMU / terrain: GY-511 tilt, humps, hump height, collisions (Buddy 4, Lim Jin Hin) | 2500928 | | `app_program/subsystem4/` | `testing/subsystem4/` |
 | 5 | Obstacle Avoid (Buddy 5, Joe Teo Wei Xuan): code in repo, not started yet | 2500177 | | `app_program/subsystem5/` | `testing/subsystem5/` |
 
 Shared files (`app_program/app_main.c`, `app_program/app.h`, this file)
@@ -52,8 +52,8 @@ fixed.
 | GP23, GP24, GP25, GP29 | *reserved* | Pico W radio |
 | GP0 | | (taken whenever the team builds with `CRASH_REPORT=1`) |
 | GP1 | | (taken whenever the team builds with `CRASH_REPORT=1`) |
-| GP2 | | |
-| GP3 | | |
+| GP2 | S4 | GY-511 SDA, I2C1 |
+| GP3 | S4 | GY-511 SCL, I2C1 |
 | GP4 | S5 | HC-SR04 TRIG (S5 not started yet) |
 | GP5 | S5 | HC-SR04 ECHO, edge interrupt (S5 not started yet) |
 | GP6 | | |
@@ -109,7 +109,7 @@ the drivers have no locking to stop it.
 |---|---|---|---|
 | UART1 | | | |
 | I2C0 | | | |
-| I2C1 | | | |
+| I2C1 | S4 | `terrain_task` | GP2, GP3 |
 | SPI0 | | | |
 | SPI1 | | | |
 | ADC (kernel driver `adca`) | S3 | `line_task` | GP26, GP27 |
@@ -159,7 +159,7 @@ change it only by team agreement. Write down every task you create.
 | 3 | 12–13 | line_task – 12 – core 1; barcode_task – 13 – core 0 |
 | 2 | 14–15 | motor_task – 14 – core 1; mission_task – 15 – core 1 |
 | 1 | 16–17 | telemetry_task – 16 – core 0 |
-| 4 | 18–19 | |
+| 4 | 18–19 | terrain_task – 18 – core 0 |
 | 5 | 20–21 | obstacle_task – 20 – core 0 (not started) |
 
 The bands of subsystems 1 and 3 are swapped (29 Oct): Telemetry must be
@@ -195,7 +195,7 @@ limit there. Subsystem 5's objects are not created while `APP_WITH_S5` = 0
 
 | Object | Limit | S1 | S2 | S3 | S4 | S5 |
 |---|---|---|---|---|---|---|
-| Task | 32 | 1 | 2 | 2 | | 1 (+1) |
+| Task | 32 | 1 | 2 | 2 | 1 | 1 (+1) |
 | Semaphore | 16 | | | | | |
 | Event flag | 16 | 1 | | 1 | | 2 (+2) |
 | Mailbox | 12 | | | | | |
@@ -203,7 +203,7 @@ limit there. Subsystem 5's objects are not created while `APP_WITH_S5` = 0
 | Message buffer | 12 | 3 | 4 | | | (+1) |
 | Fixed memory pool | 12 | | | | | |
 | Variable memory pool | 12 | | | | | |
-| Cyclic handler | 12 | | | | | |
+| Cyclic handler | 12 | | | | 1 | |
 | Alarm handler | 12 | | | | | |
 
 (The kernel's USB and WiFi service tasks also use a few of these.)
