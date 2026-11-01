@@ -2,20 +2,26 @@
  *	task_terrain.c
  *	Subsystem 4 -- Terrain Monitor task: calibration once the line sensors
  *	are done, then every 10 ms reads the GY-511, runs the hump and collision
- *	detector (terrain_logic.c) and prints what it finds.
+ *	detector (terrain_logic.c) and reports what it finds:
+ *	  heartbeat  HB_TERRAIN_MONITOR on flg_hb, every time it wakes
+ *	  faults     FAULT_BIT_COLLISION and FAULT_BIT_IMU_FAULT on flg_faults
+ *	  message    terrain_msg_t on mbf_terrain, whenever something changes
  *
  *	Why a cyclic handler: the kernel's clock ticks every 10 ms
  *	(CNF_TIMER_PERIOD), and tk_dly_tsk(10) adds one tick for safety, so a
  *	delay loop would really read every 20 ms.  The detector was tested at
  *	10 ms, so the handler wakes the task once per tick instead.
  *
- *	The task never drives the motors.  It doesn't report to the rest of
- *	the car yet (no heartbeat, fault bits or terrain_q): next step.
+ *	The task never drives the motors.  Mission Control doesn't read the
+ *	faults or mbf_terrain yet, so these reports don't change how the car
+ *	drives until Sean adds that.
  */
 
 #include "subsystem4.h"
 #include "drv_imu.h"
 #include "terrain_logic.h"
+#include "../subsystem1/subsystem1.h"	/* flg_hb, HB_TERRAIN_MONITOR */
+#include "../subsystem2/subsystem2.h"	/* flg_faults, terrain_pack() */
 #include "../subsystem3/subsystem3.h"	/* s3_is_calibrated() */
 
 #define READY_WAIT_MAX_S	30	/* line calibration failed: go on anyway */
@@ -24,9 +30,15 @@
 #define CAL_SAMPLES		20
 #define CAL_GAP_MS		30
 #define STATUS_EVERY		100	/* status line every 100 reads = 1 s */
+#define FAIL_LIMIT		10	/* failed reads in a row = 100 ms: sensor lost */
+#define TERRAIN_MSGS		4U	/* messages mbf_terrain can hold */
+
+EXPORT ID	mbf_terrain;	/* terrain_q, read by Mission Control */
 
 LOCAL ID	cyc_terrain;
 LOCAL ID	tid_terrain;
+LOCAL UW	msgs_sent = 0U;
+LOCAL UW	msgs_dropped = 0U;	/* mbf_terrain full (counted, not waited for) */
 
 /* Print a value as "12.3" */
 #define TENTHS(v)		((INT)(((v) * 10.0f) + 0.5f))
@@ -41,6 +53,24 @@ LOCAL void print_g(const char *name, float v)
 	tm_printf((UB *)"%s %c%d.%02d ", name, (v < 0.0f) ? '-' : '+', n / 100, n % 100);
 }
 
+LOCAL void hb(void)
+{
+	(void)tk_set_flg(flg_hb, HB_TERRAIN_MONITOR);
+}
+
+/* Sleep about ms, setting the heartbeat every step.  The Safety Monitor
+   counts a task as hung after 40 ms (hb_bits.h).  tk_dly_tsk(10) really
+   takes 20 ms (see the top of this file), so each step counts as 20. */
+LOCAL void wait_ms(UW ms)
+{
+	UW waited;
+
+	for (waited = 0U; waited < ms; waited += 20U) {
+		hb();
+		tk_dly_tsk((RELTIM)TERRAIN_READ_MS);
+	}
+}
+
 LOCAL void terrain_cyc(void *exinf)
 {
 	(void)exinf;
@@ -52,8 +82,9 @@ LOCAL void terrain_cyc(void *exinf)
 LOCAL void sensor_start(void)
 {
 	while (drv_imu_init() < E_OK) {
+		(void)tk_set_flg(flg_faults, FAULT_BIT_IMU_FAULT);
 		tm_printf((UB *)"[imu] GY-511 not found at 0x1D - check wiring\n");
-		tk_dly_tsk(1000);
+		wait_ms(1000U);
 	}
 }
 
@@ -63,7 +94,7 @@ LOCAL void wait_for_line_calibration(void)
 	INT s;
 
 	for (s = 0; (s < READY_WAIT_MAX_S) && !s3_is_calibrated(); s++) {
-		tk_dly_tsk(1000);
+		wait_ms(1000U);
 	}
 }
 
@@ -78,11 +109,11 @@ LOCAL void calibrate(float *p_x, float *p_y, float *p_z)
 
 	tm_printf((UB *)"[imu] Put the car FLAT and don't touch it. Calibrating in %d s...\n",
 		  CAL_WAIT_S);
-	tk_dly_tsk(CAL_WAIT_S * 1000);
+	wait_ms(CAL_WAIT_S * 1000U);
 
 	for (i = 0; i < CAL_DISCARD; i++) {
 		(void)drv_imu_read(&ax, &ay, &az);
-		tk_dly_tsk(CAL_GAP_MS);
+		wait_ms(CAL_GAP_MS);
 	}
 	for (i = 0; i < CAL_SAMPLES; i++) {
 		if (drv_imu_read(&ax, &ay, &az) >= E_OK) {
@@ -91,7 +122,7 @@ LOCAL void calibrate(float *p_x, float *p_y, float *p_z)
 			z += az / IMU_LSB_PER_G;
 			good++;
 		}
-		tk_dly_tsk(CAL_GAP_MS);
+		wait_ms(CAL_GAP_MS);
 	}
 	if (good > 0) {
 		x /= good;
@@ -143,6 +174,42 @@ LOCAL void print_events(UINT ev, const terrain_t *t)
 	}
 }
 
+/* Tell Mission Control what just changed.  Zero-timeout send: the terrain
+   task must never wait for the receiver.  Motion events aren't built yet,
+   so FLAT is sent as IMU_STATIONARY even while driving. */
+LOCAL void send_terrain(UINT ev, const terrain_t *t)
+{
+	BOOL const	collision = ((ev & TERRAIN_EV_COLLISION) != 0U) ? TRUE : FALSE;
+	UB		motion = IMU_STATIONARY;
+	terrain_msg_t	m;
+
+	if (collision) {
+		motion = IMU_IMPACT;
+	} else if (t->state == TERRAIN_CLIMBING) {
+		motion = IMU_CLIMBING_HUMP;
+	} else if (t->state == TERRAIN_DESCENDING) {
+		motion = IMU_DESCENDING_HUMP;
+	}
+	m = terrain_pack((UB)t->state, motion, collision, (UB)(t->best_mm + 0.5f));
+
+	if (tk_snd_mbf(mbf_terrain, &m, (INT)sizeof(m), TMO_POL) == E_OK) {
+		msgs_sent++;
+	} else {
+		msgs_dropped++;
+	}
+	tm_printf((UB *)"[imu] terrain_q: state %u, motion %u, collision %u, highest %u mm\n",
+		  (UINT)terrain_get_state(m), (UINT)terrain_get_motion(m),
+		  (UINT)terrain_get_collision(m), (UINT)terrain_get_peak_mm(m));
+}
+
+/* The current bits of an event flag, for the status line. */
+LOCAL UINT flag_bits(ID flg)
+{
+	T_RFLG rflg;
+
+	return (tk_ref_flg(flg, &rflg) == E_OK) ? rflg.flgptn : 0U;
+}
+
 EXPORT void terrain_task(INT stacd, void *exinf)
 {
 	LOCAL const char * const state_name[] = { "FLAT", "CLIMBING", "DESCENDING" };
@@ -151,6 +218,7 @@ EXPORT void terrain_task(INT stacd, void *exinf)
 	float		peak_jolt = 0.0f;	/* biggest jolt since the last print */
 	UW		reads = 0U;		/* good reads since the last print */
 	UW		fails = 0U;		/* failed reads since the last print */
+	UW		fails_in_row = 0U;
 	INT		count = 0;
 
 	(void)stacd; (void)exinf;
@@ -169,6 +237,7 @@ EXPORT void terrain_task(INT stacd, void *exinf)
 		UINT	ev;
 
 		(void)tk_slp_tsk(TMO_FEVR);
+		hb();
 
 		if (drv_imu_read(&ax, &ay, &az) >= E_OK) {
 			ev = terrain_step(&t, ax / IMU_LSB_PER_G, ay / IMU_LSB_PER_G,
@@ -176,21 +245,34 @@ EXPORT void terrain_task(INT stacd, void *exinf)
 			if (t.jolt_g > peak_jolt) {
 				peak_jolt = t.jolt_g;
 			}
+			if ((ev & TERRAIN_EV_COLLISION) != 0U) {
+				(void)tk_set_flg(flg_faults, FAULT_BIT_COLLISION);
+			}
 			if (ev != 0U) {
 				print_events(ev, &t);
+				send_terrain(ev, &t);
 			}
 			reads++;
+			fails_in_row = 0U;
 		} else {
 			fails++;
+			fails_in_row++;
+			if (fails_in_row == FAIL_LIMIT) {
+				(void)tk_set_flg(flg_faults, FAULT_BIT_IMU_FAULT);
+				tm_printf((UB *)"[imu] FAULT: sensor stopped answering\n");
+			}
 		}
 
 		/* Status line, about once a second.  "reads" should stay near
 		   100: it shows the loop really runs every 10 ms. */
 		count++;
 		if (count >= STATUS_EVERY) {
-			tm_printf((UB *)"[imu] %s tilt %d.%d deg, jolt %d.%d g, reads %u, failed %u\n",
+			tm_printf((UB *)"[imu] %s tilt %d.%d deg, jolt %d.%d g, reads %u, failed %u,"
+				  " hb %x, faults %x, sent %u, dropped %u\n",
 				  state_name[t.state], WHOLE(t.tilt_deg), TENTH(t.tilt_deg),
-				  WHOLE(peak_jolt), TENTH(peak_jolt), (UINT)reads, (UINT)fails);
+				  WHOLE(peak_jolt), TENTH(peak_jolt), (UINT)reads, (UINT)fails,
+				  flag_bits(flg_hb) & HB_TERRAIN_MONITOR, flag_bits(flg_faults),
+				  (UINT)msgs_sent, (UINT)msgs_dropped);
 			peak_jolt = 0.0f;
 			reads = 0U;
 			fails = 0U;
@@ -202,7 +284,16 @@ EXPORT void terrain_task(INT stacd, void *exinf)
 /* Kernel objects: called from subsystem4_init(). */
 EXPORT ER terrain_objects_init(void)
 {
-	T_CCYC ccyc = {0};
+	T_CCYC	ccyc = {0};
+	T_CMBF	cmbf = {0};
+
+	cmbf.mbfatr = TA_TFIFO;
+	cmbf.bufsz  = (SZ)((sizeof(terrain_msg_t) + 8U) * TERRAIN_MSGS);
+	cmbf.maxmsz = (INT)sizeof(terrain_msg_t);
+	mbf_terrain = tk_cre_mbf(&cmbf);
+	if (mbf_terrain < E_OK) {
+		return mbf_terrain;
+	}
 
 	ccyc.cycatr = TA_HLNG;
 	ccyc.cychdr = (FP)terrain_cyc;
