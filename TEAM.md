@@ -2,7 +2,7 @@
 
 The template's example rows were replaced by the robot car on 29 Oct 2026:
 subsystems 1-3 run the car, ported from the bare-metal `integrated_car/` bench.
-Subsystem 4 reads the IMU and prints humps; its links to the car are not added yet. Subsystem 5 is compiled but not started
+Subsystem 4 reads the IMU and reports humps and collisions; Mission Control does not read them yet. Subsystem 5 is compiled but not started
 (`APP_WITH_S5` in `app_program/app.h`) until it is tested.
 
 Fill this in at the start of the project and keep it up to date. It is the
@@ -183,6 +183,7 @@ sends to it or waits on it. Agree on the data format before coding.
 | IF-06 | S1 ↔ kernel WiFi task | message buffers (owned by S1) + `app_mqtt_*()` hooks | `mbf_mqtt_tx`, `mbf_mqtt_rx` | MQTT publish / receive (`s1_mqtt_bridge.c`, `mqtt_utk.c`) | Buddy 1; instructor OK given |
 | IF-07 | all → S1 | event flag (owned by S1) | `flg_hb` | heartbeat bits `HB_*` (`hb_bits.h`); the Safety Monitor that reads them is not built yet | all |
 | IF-08 | S1 writes, S2 reads | shared data, one aligned 32-bit word | `g_nav_map` (defined in S2) | barcode map: `nav_map_apply()` / `nav_map_snapshot()` (`nav_cmd.h`) | Buddies 1, 2, 3 |
+| IF-09 | S4 → S2 | message buffer (owned by S4, draft) | `mbf_terrain` | `terrain_msg_t`: 2 bytes, state / motion / collision / highest hump in mm (`shared_types.h`). S2 does not read it yet | Buddy 4; not yet agreed with Buddy 2 |
 
 Each interface is tested by at least one integration test
 (`testing/integration/TEST_LOG.md`).
@@ -200,7 +201,7 @@ limit there. Subsystem 5's objects are not created while `APP_WITH_S5` = 0
 | Event flag | 16 | 1 | | 1 | | 2 (+2) |
 | Mailbox | 12 | | | | | |
 | Mutex | 12 | | | | | |
-| Message buffer | 12 | 3 | 4 | | | (+1) |
+| Message buffer | 12 | 3 | 4 | | 1 | (+1) |
 | Fixed memory pool | 12 | | | | | |
 | Variable memory pool | 12 | | | | | |
 | Cyclic handler | 12 | | | | 1 | |
