@@ -110,17 +110,24 @@ static void on_online(void)
               MQTT_TOPIC_ROOT, MQTT_TOPIC_ROOT);
 }
 
-/* Heartbeat: 9 packed bytes (packets.h). RSSI is not available to
- * application tasks under uT-Kernel (only the WiFi task may call cyw43),
- * so it is sent as 0. */
+/* Heartbeat: 9 packed bytes (packets.h). RSSI comes from the WiFi task's
+ * status (it reads it once a second; only that task may call cyw43), sent
+ * as -dBm like the bare-metal version; 0 = not known yet. */
 static void send_heartbeat(void)
 {
     uint8_t hb[PKT_HB_LEN];
+    int32_t rssi = 0;
+#if TM_WIFI_CYW43 && TM_MQTT
+    T_CYW43_UTK_STATUS st;
+
+    cyw43_utk_get_status(&st);
+    rssi = st.link_rssi;
+#endif
 
     memset(hb, 0, sizeof(hb));
     pkt_put(hb, PKT_HB_SEQ,        g_heartbeat_seq++);
     pkt_put(hb, PKT_HB_UPTIME,     pkt_sat(s1_now_ms() / 1000u, PKT_HB_UPTIME));
-    pkt_put(hb, PKT_HB_RSSI,       0u);
+    pkt_put(hb, PKT_HB_RSSI,       pkt_sat((rssi < 0) ? (uint32_t)(-rssi) : 0u, PKT_HB_RSSI));
     pkt_put(hb, PKT_HB_RECONNECTS, pkt_sat(g_stats.reconnects, PKT_HB_RECONNECTS));
     pkt_put(hb, PKT_HB_PUB_FAIL,   pkt_sat(g_stats.pub_fail + s1_mqtt_pub_err, PKT_HB_PUB_FAIL));
     pkt_put(hb, PKT_HB_CMD_DROP,   pkt_sat(g_stats.cmds_dropped, PKT_HB_CMD_DROP));

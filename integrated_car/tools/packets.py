@@ -214,6 +214,27 @@ def describe_heartbeat(payload):
             f"cmds dropped {h['cmd_drop']}, events dropped {h['ev_drop']}, map {held}")
 
 
+# Live-data fault mask (16 bits), as filled in by the uT-Kernel build's
+# telemetry task: bits 0-11 = the team's fault table (flg_faults, defined in
+# app_program/subsystem2/shared_types.h), bits 12-14 = the task the Safety
+# Monitor found hung (number below, 0 = none), bit 15 = WiFi loss.
+FAULT_NAMES = {0: "MQTT_ESTOP", 1: "LINE_UNCAL", 2: "COLLISION", 3: "MOTOR_STALL",
+               4: "ENC_FAULT", 5: "IMU_FAULT", 6: "TASK_HUNG", 8: "US_NO_ECHO",
+               9: "NO_SAFE_ROUTE", 10: "US_TIMEOUT", 11: "NO_LINE", 15: "WIFI_LOSS"}
+HUNG_TASKS = ["", "Motor Control", "Mission Control", "Line Follow", "Barcode Decode",
+              "Terrain Monitor", "Obstacle Avoid", "Telemetry"]
+
+
+def describe_faults(mask):
+    parts = [n for b, n in FAULT_NAMES.items() if mask & (1 << b)]
+    task = (mask >> 12) & 7
+    if task:
+        parts.append(f"hung task: {HUNG_TASKS[task]}")
+    if mask & 0x0080:
+        parts.append("bit 7 (unassigned)")
+    return ", ".join(parts) if parts else "none"
+
+
 def describe_live(payload):
     d = scaled("live", payload)
     faults = int(d["faults"])
@@ -350,6 +371,10 @@ def self_test():
     u.reset()
     checks.append((u.update(3) == 3, "unwrap restarts after reset()"))
 
+    checks.append((describe_faults(0) == "none", "no faults"))
+    checks.append((describe_faults(0x0100) == "US_NO_ECHO", "ultrasonic fault name"))
+    got = describe_faults(0x8000 | (3 << 12) | 0x0040)
+    checks.append((got == "TASK_HUNG, WIFI_LOSS, hung task: Line Follow", f"hung task + wifi: {got}"))
     failed = [n for good, n in checks if not good]
     for good, n in checks:
         print(("PASS " if good else "FAIL ") + n)

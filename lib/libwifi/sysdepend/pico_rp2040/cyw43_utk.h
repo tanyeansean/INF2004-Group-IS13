@@ -19,6 +19,9 @@ typedef struct {
      * negative = down/join failed, 1 = joined, 2 = joined + got an IP. */
     volatile int32_t link_status;
     volatile uint32_t ip_addr;
+    /* NET=lwip: signal strength of the joined network in dBm, read once a
+     * second while the link is up (0 = not known yet). For telemetry. */
+    volatile int32_t link_rssi;
 } T_CYW43_UTK_STATUS;
 
 int32_t cyw43_utk_start(void);

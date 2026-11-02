@@ -7,17 +7,19 @@
  * reads and clears all the bits in one kernel call when it takes attendance
  * every 20 ms. Fault bits live in their own event flag, never here (G2).
  *
- * Periods and hung limits are from the G9 timing table.
+ * Periods are from the G9 timing table. The hung limits used are in
+ * safety_logic.h: 60 ms (150 ms for Obstacle Avoid), because the kernel tick
+ * is 10 ms here; the G9 table's 40 ms assumed a 1 ms tick.
  */
 #ifndef HB_BITS_H
 #define HB_BITS_H
 
-#define HB_MOTOR_CONTROL    (1u << 0)   /* Buddy 2, 20 ms loop     - hung after 40 ms  */
-#define HB_MISSION_CONTROL  (1u << 1)   /* Buddy 2, 20 ms timeout  - hung after 40 ms  */
-#define HB_LINE_FOLLOW      (1u << 2)   /* Buddy 3, 5 ms loop      - hung after 40 ms  */
-#define HB_BARCODE_DECODE   (1u << 3)   /* Buddy 3, 20 ms timeout  - hung after 40 ms  */
-#define HB_TERRAIN_MONITOR  (1u << 4)   /* Buddy 4, 20 ms loop     - hung after 40 ms  */
-#define HB_OBSTACLE_AVOID   (1u << 5)   /* Buddy 5, 60 ms waits    - hung after 120 ms */
+#define HB_MOTOR_CONTROL    (1u << 0)   /* Buddy 2, 20 ms loop     - hung after 60 ms  */
+#define HB_MISSION_CONTROL  (1u << 1)   /* Buddy 2, 20 ms timeout  - hung after 60 ms  */
+#define HB_LINE_FOLLOW      (1u << 2)   /* Buddy 3, 5 ms loop      - hung after 60 ms  */
+#define HB_BARCODE_DECODE   (1u << 3)   /* Buddy 3, 20 ms timeout  - hung after 60 ms  */
+#define HB_TERRAIN_MONITOR  (1u << 4)   /* Buddy 4, 20 ms loop     - hung after 60 ms  */
+#define HB_OBSTACLE_AVOID   (1u << 5)   /* Buddy 5, 60 ms waits    - hung after 150 ms */
 #define HB_TELEMETRY        (1u << 6)   /* Buddy 1, ~10 ms         - report only       */
 
 #define HB_ALL_TASKS        (0x7Fu)

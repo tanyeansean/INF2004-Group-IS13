@@ -284,6 +284,7 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
 #if TM_NET_LWIP
     int32_t  prev_link_status = radio_status.link_status;
     uint64_t rejoin_at = 0;
+    uint64_t rssi_at = 0;
 #endif
 
     for(;;) {
@@ -294,6 +295,15 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
         radio_status.link_status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
         if(radio_status.link_status == CYW43_LINK_UP) {
             radio_status.ip_addr = ip4_addr_get_u32(netif_ip4_addr(&cyw43_state.netif[CYW43_ITF_STA]));
+            /* Signal strength once a second, for the telemetry heartbeat
+             * (application tasks may not call cyw43 themselves). */
+            if(time_us_64() >= rssi_at) {
+                int32_t rssi = 0;
+                rssi_at = time_us_64() + 1000000ull;
+                if(cyw43_wifi_get_rssi(&cyw43_state, &rssi) == 0) {
+                    radio_status.link_rssi = rssi;
+                }
+            }
         }
         if(radio_status.link_status != prev_link_status) {
             prev_link_status = radio_status.link_status;

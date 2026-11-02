@@ -114,5 +114,11 @@ EXPORT ER subsystem1_start(void)
 {
 	/* Core 0, beside the kernel's WiFi task it exchanges messages with. */
 	ID tid = app_start_task(telemetry_task, S1_PRI_TELEMETRY, TP_PRC1, "telemetry_task");
+	if (tid < E_OK) {
+		return tid;
+	}
+	/* Safety Monitor on core 1, with Motor and Mission Control: if core 0
+	   stalls (WiFi, USB), it still runs and sees core 0's tasks go quiet. */
+	tid = app_start_task(safety_task, S1_PRI_SAFETY, TP_PRC2, "safety_task");
 	return (tid < E_OK) ? tid : E_OK;
 }

@@ -7,6 +7,12 @@
  *	map, acks, heartbeat) and telem_poll() (live data 5 Hz, events).
  *	The telem_*() functions are not thread-safe; only this task calls
  *	them, which is why other tasks send their data on status_q.
+ *
+ *	Fault mask in live data (16 bits): bits 0-11 = the team's fault table
+ *	(flg_faults, shared_types.h), read here without changing it; bits
+ *	12-14 = the hung task's number from the Safety Monitor (1 Motor,
+ *	2 Mission, 3 Line, 4 Barcode, 5 Terrain, 6 Obstacle, 7 Telemetry,
+ *	0 = none); bit 15 = WiFi loss (telemetry.c).
  */
 
 #include "subsystem1.h"
@@ -34,6 +40,19 @@ LOCAL bool on_command(comms_cmd_t const *p_cmd)
 		break;
 	}
 	return (tk_snd_mbf(mbf_cmd, (void *)p_cmd, (INT)sizeof(*p_cmd), TMO_POL) == E_OK);
+}
+
+/* Team fault table + Safety Monitor, for the laptop (see the top). */
+LOCAL void update_faults(void)
+{
+	T_RFLG	rflg;
+	UW	faults = 0U;
+
+	if (tk_ref_flg(flg_faults, &rflg) == E_OK) {
+		faults = rflg.flgptn & 0x0FFFU;
+	}
+	faults |= (s1_safety_report_task() & 0x7U) << 12;
+	telem_set_faults((uint16_t)faults);
 }
 
 LOCAL INT sign7(UH v)
@@ -89,6 +108,7 @@ EXPORT void telemetry_task(INT stacd, void *exinf)
 			    (tk_rcv_mbf(mbf_status, &m, TMO_POL) == (INT)sizeof(m)); i++) {
 			apply_status(m);
 		}
+		update_faults();
 		comms_poll();
 		telem_poll();
 		(void)tk_set_flg(flg_hb, HB_TELEMETRY);

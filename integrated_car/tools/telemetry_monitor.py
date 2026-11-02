@@ -54,6 +54,7 @@ log_file = open(args.log, "a", newline="")
 log = csv.writer(log_file)
 last_live_seq = None
 lost_live = 0
+last_faults = 0
 map_sent_at = None              # time the last map went out, until its ack
 broker_map = None               # last payload seen on cmd/barcode_map (None = not seen)
 car_map = None                  # (held, 20 map bits) from the latest heartbeat
@@ -77,13 +78,17 @@ def on_connect(client, userdata, flags, reason_code, properties):
 
 
 def show_live(payload):
-    global last_live_seq, lost_live
+    global last_live_seq, lost_live, last_faults
     try:
         seq = pk.unpack("live", payload)["seq"]
+        faults = pk.unpack("live", payload)["faults"]
         text = pk.describe_live(payload)
     except ValueError as e:
         print(f"\n[telemetry/live] {payload.hex(' ')} ({e})")
         return
+    if faults != last_faults:                # names, once per change
+        print(f"\n[faults] 0x{faults:04x}: {pk.describe_faults(faults)}")
+        last_faults = faults
     if last_live_seq is not None and seq != last_live_seq:   # same seq = duplicate
         lost_live += (seq - last_live_seq - 1) % 256
     last_live_seq = seq
@@ -120,7 +125,7 @@ def on_heartbeat(payload):
 
 
 def on_message(client, userdata, msg):
-    global map_sent_at, broker_map, enc_now, last_live_seq, rssi
+    global map_sent_at, broker_map, enc_now, last_live_seq, rssi, last_faults
     sub = msg.topic[len(args.root) + 1:]
     text = pk.describe(sub, msg.payload)
     log.writerow([f"{time.time():.3f}", sub, msg.payload.hex(" "), text])
@@ -131,6 +136,7 @@ def on_message(client, userdata, msg):
         for u in (*enc, dist):          # its counters may have restarted
             u.reset()
         enc_now, rssi = (None, None), None   # hide the old car's values until new ones arrive
+        last_faults = 0
         print(f"\n[{sub}] {text}")
     elif sub == "telemetry/live":
         show_live(msg.payload)

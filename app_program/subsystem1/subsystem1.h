@@ -9,6 +9,9 @@
  *
  *	Public: the heartbeat flag every task sets (hb_bits.h), and IF-05,
  *	Mission Control's data for telemetry (status_q).
+ *
+ *	Two tasks: telemetry_task (task_telemetry.c) and safety_task, the
+ *	Safety Monitor (task_safety.c, logic in safety_logic.c).
  */
 
 #ifndef SUBSYSTEM1_H
@@ -20,9 +23,13 @@
 #include "telemetry.h"
 
 #define S1_PRI_TELEMETRY	16	/* band 16-17 (TEAM.md): lowest, NFR5 */
+#define S1_PRI_SAFETY		10	/* above every application task, so it
+					   can always check the others (TEAM.md
+					   section 4 needs a row: 5-11 is free) */
 
 /* Heartbeat event flag (G2).  Every task sets ONLY its own HB_* bit with
-   tk_set_flg() each loop.  The Safety Monitor will read it (not built yet). */
+   tk_set_flg() every time it wakes.  The Safety Monitor (task_safety.c)
+   reads and clears all the bits every 20 ms; nobody else may clear them. */
 IMPORT ID	flg_hb;
 
 /* ---------------------------------------------------------------------
@@ -64,6 +71,9 @@ IMPORT volatile UW	s1_mqtt_connected;
 IMPORT volatile UW	s1_mqtt_rx_dropped;
 IMPORT volatile UW	s1_mqtt_pub_err;
 IMPORT void		telemetry_task(INT stacd, void *exinf);
+IMPORT void		safety_task(INT stacd, void *exinf);
+IMPORT volatile UW	s1_safety_hung;		/* HB_* bits hung now */
+IMPORT UW		s1_safety_report_task(void);	/* 0 or hung task 1-7 */
 uint32_t		s1_now_ms(void);
 
 #endif /* SUBSYSTEM1_H */
