@@ -19,6 +19,8 @@ typedef enum { TERRAIN_FLAT, TERRAIN_CLIMBING, TERRAIN_DESCENDING } terrain_stat
 #define TERRAIN_EV_NOT_A_HUMP	(1U << 4)
 #define TERRAIN_EV_TIMED_OUT	(1U << 5)
 #define TERRAIN_EV_COLLISION	(1U << 6)
+#define TERRAIN_EV_STARTED	(1U << 7)	/* stationary -> moving */
+#define TERRAIN_EV_STOPPED	(1U << 8)	/* moving -> stationary */
 
 typedef struct {
 	terrain_state_t	state;
@@ -26,6 +28,9 @@ typedef struct {
 	float		flat_x, flat_y, flat_z;	/* gravity when flat on this floor */
 	float		tilt_deg;	/* tilt away from flat */
 	float		jolt_g;		/* how far this reading is from the average */
+	float		shake_g;	/* averaged jolt: how much the car is shaking */
+	int		moving;		/* 1 = shaking like a moving car, 0 = stationary */
+	int		shake_ms;	/* how long the shake has disagreed with "moving" */
 	float		hump_peak_deg;	/* highest tilt in the current hump */
 	float		height_mm;	/* height of the last finished hump */
 	float		best_mm;	/* highest hump of this run */

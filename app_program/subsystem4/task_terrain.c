@@ -39,6 +39,7 @@ LOCAL ID	cyc_terrain;
 LOCAL ID	tid_terrain;
 LOCAL UW	msgs_sent = 0U;
 LOCAL UW	msgs_dropped = 0U;	/* mbf_terrain full (counted, not waited for) */
+LOCAL UB	last_motion = IMU_STATIONARY;	/* the latest motion event */
 
 /* Print a value as "12.3" */
 #define TENTHS(v)		((INT)(((v) * 10.0f) + 0.5f))
@@ -172,25 +173,40 @@ LOCAL void print_events(UINT ev, const terrain_t *t)
 	if ((ev & TERRAIN_EV_TIMED_OUT) != 0U) {
 		tm_printf((UB *)"[imu] >>> Timed out, treating this as flat\n");
 	}
+	if ((ev & TERRAIN_EV_STARTED) != 0U) {
+		tm_printf((UB *)"[imu] >>> MOVING\n");
+	}
+	if ((ev & TERRAIN_EV_STOPPED) != 0U) {
+		tm_printf((UB *)"[imu] >>> STATIONARY\n");
+	}
 }
 
 /* Tell Mission Control what just changed.  Zero-timeout send: the terrain
-   task must never wait for the receiver.  Motion events aren't built yet,
-   so FLAT is sent as IMU_STATIONARY even while driving. */
+   task must never wait for the receiver.  The motion field is the LATEST
+   motion event, not what the car is doing this instant.  IMU_ACCELERATING
+   means "started moving from rest": with no encoders, speeding up while
+   already moving can't be told from vibration.  IMU_TURNING isn't built. */
 LOCAL void send_terrain(UINT ev, const terrain_t *t)
 {
 	BOOL const	collision = ((ev & TERRAIN_EV_COLLISION) != 0U) ? TRUE : FALSE;
-	UB		motion = IMU_STATIONARY;
 	terrain_msg_t	m;
 
-	if (collision) {
-		motion = IMU_IMPACT;
-	} else if (t->state == TERRAIN_CLIMBING) {
-		motion = IMU_CLIMBING_HUMP;
-	} else if (t->state == TERRAIN_DESCENDING) {
-		motion = IMU_DESCENDING_HUMP;
+	if ((ev & TERRAIN_EV_STOPPED) != 0U) {
+		last_motion = IMU_STATIONARY;
 	}
-	m = terrain_pack((UB)t->state, motion, collision, (UB)(t->best_mm + 0.5f));
+	if ((ev & TERRAIN_EV_STARTED) != 0U) {
+		last_motion = IMU_ACCELERATING;
+	}
+	if ((ev & (TERRAIN_EV_CLIMBING | TERRAIN_EV_CLIMB_AGAIN)) != 0U) {
+		last_motion = IMU_CLIMBING_HUMP;
+	}
+	if ((ev & TERRAIN_EV_DESCENDING) != 0U) {
+		last_motion = IMU_DESCENDING_HUMP;
+	}
+	if (collision) {
+		last_motion = IMU_IMPACT;
+	}
+	m = terrain_pack((UB)t->state, last_motion, collision, (UB)(t->best_mm + 0.5f));
 
 	if (tk_snd_mbf(mbf_terrain, &m, (INT)sizeof(m), TMO_POL) == E_OK) {
 		msgs_sent++;
@@ -267,10 +283,12 @@ EXPORT void terrain_task(INT stacd, void *exinf)
 		   100: it shows the loop really runs every 10 ms. */
 		count++;
 		if (count >= STATUS_EVERY) {
-			tm_printf((UB *)"[imu] %s tilt %d.%d deg, jolt %d.%d g, reads %u, failed %u,"
-				  " hb %x, faults %x, sent %u, dropped %u\n",
-				  state_name[t.state], WHOLE(t.tilt_deg), TENTH(t.tilt_deg),
-				  WHOLE(peak_jolt), TENTH(peak_jolt), (UINT)reads, (UINT)fails,
+			tm_printf((UB *)"[imu] %s %s tilt %d.%d deg, jolt %d.%d g, shake 0.%03d g,"
+				  " reads %u, failed %u, hb %x, faults %x, sent %u, dropped %u\n",
+				  t.moving ? "MOVING" : "STILL", state_name[t.state],
+				  WHOLE(t.tilt_deg), TENTH(t.tilt_deg),
+				  WHOLE(peak_jolt), TENTH(peak_jolt),
+				  (INT)((t.shake_g * 1000.0f) + 0.5f), (UINT)reads, (UINT)fails,
 				  flag_bits(flg_hb) & HB_TERRAIN_MONITOR, flag_bits(flg_faults),
 				  (UINT)msgs_sent, (UINT)msgs_dropped);
 			peak_jolt = 0.0f;
