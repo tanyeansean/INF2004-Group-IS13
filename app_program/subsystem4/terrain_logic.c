@@ -41,6 +41,14 @@
 #define HUMP_TIMEOUT_MS	5000	/* stuck this long = not a hump, start again */
 #define D_MM		87.0f	/* from still tests at 10, 20, 30 mm, 1 Nov (tape, +/-1 mm) */
 
+/* ---- Moving or stationary: a driving car shakes, a stopped one doesn't.
+   Provisional numbers until they are measured on the car. ---- */
+#define SHAKE_SMOOTH	0.02f	/* averaging: new jolt counts 2% (about 0.5 s) */
+#define MOVING_SHAKE	0.03f	/* shake above this ...                   */
+#define MOVING_MS	200	/* ... for this long = the car started    */
+#define STILL_SHAKE	0.02f	/* shake below this ...                   */
+#define STILL_MS	500	/* ... for this long = the car stopped    */
+
 #define RAD_TO_DEG	57.2958f
 
 /* Square root: keep averaging the guess with x / guess (Newton's method). */
@@ -113,6 +121,9 @@ void terrain_init(terrain_t *t, float x_g, float y_g, float z_g)
 	t->flat_x = x_g;  t->flat_y = y_g;  t->flat_z = z_g;
 	t->tilt_deg = 0.0f;
 	t->jolt_g = 0.0f;
+	t->shake_g = 0.0f;
+	t->moving = 0;
+	t->shake_ms = 0;
 	t->hump_peak_deg = 0.0f;
 	t->height_mm = 0.0f;
 	t->best_mm = 0.0f;
@@ -213,6 +224,34 @@ static unsigned int hump_step(terrain_t *t)
 	return ev;
 }
 
+/* Has the car started or stopped?  Two different limits, so a shake close to
+   one limit can't flip the answer back and forth. */
+static unsigned int motion_step(terrain_t *t)
+{
+	unsigned int ev = 0U;
+
+	t->shake_g += SHAKE_SMOOTH * (t->jolt_g - t->shake_g);
+
+	if ((t->moving == 0) && (t->shake_g > MOVING_SHAKE)) {
+		t->shake_ms += TERRAIN_READ_MS;
+		if (t->shake_ms >= MOVING_MS) {
+			t->moving = 1;
+			t->shake_ms = 0;
+			ev |= TERRAIN_EV_STARTED;
+		}
+	} else if ((t->moving != 0) && (t->shake_g < STILL_SHAKE)) {
+		t->shake_ms += TERRAIN_READ_MS;
+		if (t->shake_ms >= STILL_MS) {
+			t->moving = 0;
+			t->shake_ms = 0;
+			ev |= TERRAIN_EV_STOPPED;
+		}
+	} else {
+		t->shake_ms = 0;
+	}
+	return ev;
+}
+
 unsigned int terrain_step(terrain_t *t, float x_g, float y_g, float z_g)
 {
 	/* Jolt = how far this reading is from the averaged gravity */
@@ -222,6 +261,7 @@ unsigned int terrain_step(terrain_t *t, float x_g, float y_g, float z_g)
 	unsigned int	ev = 0U;
 
 	t->jolt_g = root(dx*dx + dy*dy + dz*dz);
+	ev |= motion_step(t);
 	if (t->jolt_g > COLLISION_JOLT) {
 		if (t->blank_ms <= 0) {
 			ev |= TERRAIN_EV_COLLISION;
