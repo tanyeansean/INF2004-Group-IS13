@@ -21,7 +21,7 @@ Two parts, one folder:
 
 Shared kernel files carrying the network for this subsystem (agreed with the team, TEAM.md section 3):
 `lib/libwifi/sysdepend/pico_rp2040/cyw43_utk.c / .h`, `lib/liblwip/sysdepend/pico_rp2040/mqtt_utk.c`.
-Laptop tools: `integrated_car/tools/` (`telemetry_monitor.py`, `packets.py`, `barcode_map.py`, `mosquitto.conf`).
+Laptop tools: `integrated_car/tools/` (`dashboard.py` + `dashboard.html`, `telemetry_monitor.py`, `packets.py`, `barcode_map.py`, `mosquitto.conf`).
 
 ## Changes in this version (2 Nov 2026)
 
@@ -92,8 +92,10 @@ Calibration still follows the console prompts at boot (Buddy 3's line task). On 
 ```
 mosquitto -c integrated_car/tools/mosquitto.conf -v
 pip install "paho-mqtt==2.1.0"
-python integrated_car/tools/telemetry_monitor.py
+python integrated_car/tools/dashboard.py          # browser dashboard: open http://localhost:8765
+python integrated_car/tools/telemetry_monitor.py  # or the text monitor
 ```
+The dashboard has Start / Stop / E-STOP, a speed slider, ping, reset peak and summary buttons; the barcode map as four letter boxes; live tiles (state, distance, speeds, encoders, pitch, turn rate, motion, highest hump); the two line sensors shown black or white and the line position as a bar; faults by name; the end-of-run summary with its check against the raw events; an event log; and a calibration timer that says when to hold the sensors on black and on white after power-on. `dashboard.html` sits next to it; a phone on the same hotspot can open `http://<laptop IP>:8765`.
 Why the car stopped, without the USB console:
 - `[event/state] LINE_FOLLOW -> OBSTACLE_SCAN`: the ultrasonic saw something within 35 cm.
 - `-> ERROR` with `[faults] ... US_NO_ECHO`: the ultrasonic is not answering.

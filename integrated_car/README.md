@@ -30,6 +30,7 @@ stays outside `app_program/` and is not part of the `build_make` build.
 
 ## Laptop side (`tools/`)
 `mosquitto -c tools/mosquitto.conf -v`, allow TCP 1883 in the firewall, then
+`python tools/dashboard.py` and open http://localhost:8765 (buttons, gauges, map, run summary), or
 `pip install "paho-mqtt==2.1.0"` and `python tools/telemetry_monitor.py` (needs `tools/packets.py` and
 `tools/barcode_map.py` next to it). Commands go as 1 byte each; the monitor decodes every reply.
 The broker allows anonymous connections: use only on your own hotspot.
