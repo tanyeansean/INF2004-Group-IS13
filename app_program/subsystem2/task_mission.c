@@ -69,9 +69,12 @@
 #define REG_ALIAS_SET		(0x2000U)
 #define REG_ALIAS_CLR		(0x3000U)
 
-/* CAR_AVOID: subsystem 5 has the wheels. Line steering is off and only
-   S5's motion_q moves are driven, until S5 sends CLEAR (or FAULT). */
-typedef enum { CAR_IDLE = 0, CAR_FOLLOW, CAR_MANEUVER, CAR_AVOID } car_mode_t;
+typedef enum {
+	CAR_IDLE = 0, CAR_FOLLOW, CAR_MANEUVER,
+	CAR_AVOID		/* subsystem 5 has the wheels: line steering is
+				   off and only S5's motion_q moves are driven,
+				   until S5 sends CLEAR (or FAULT) */
+} car_mode_t;
 
 /* Mission Control's state: this task only. */
 LOCAL car_mode_t	g_mode = CAR_IDLE;
@@ -127,6 +130,15 @@ LOCAL void car_stop(robot_state_t why)
 	s1_post_state(why);
 }
 
+/* Back to line following without the START checks (after an avoid). */
+LOCAL void car_resume_follow(void)
+{
+	s3_request_line_reset();	/* = line_follow_reset(ls) in main.c */
+	g_hold_until_ms = 0U;
+	g_mode = CAR_FOLLOW;
+	s1_post_state(ROBOT_LINE_FOLLOW);
+}
+
 LOCAL void car_start(void)
 {
 	if (!s3_is_calibrated()) {
@@ -142,10 +154,7 @@ LOCAL void car_start(void)
 		(void)tk_set_flg(flg_avoid, AVOID_EVT_RESUME);
 	}
 #endif
-	s3_request_line_reset();	/* = line_follow_reset(ls) in main.c */
-	g_hold_until_ms = 0U;
-	g_mode = CAR_FOLLOW;
-	s1_post_state(ROBOT_LINE_FOLLOW);
+	car_resume_follow();
 	tm_printf((UB *)"[car] START (base PWM M1=%d M2=%d)\n", g_base_m1, g_base_m2);
 }
 
@@ -330,10 +339,7 @@ LOCAL void on_obstacle(obstacle_msg_t const *p)
 		if (g_mode == CAR_AVOID) {
 			av_halt();
 			g_av_settling = FALSE;
-			s3_request_line_reset();
-			g_hold_until_ms = 0U;
-			g_mode = CAR_FOLLOW;
-			s1_post_state(ROBOT_LINE_FOLLOW);
+			car_resume_follow();
 			tm_printf((UB *)"[obs] S5 done - line following\n");
 		}
 		break;
@@ -661,6 +667,9 @@ EXPORT void mission_task(INT stacd, void *exinf)
 		}
 		button_poll(t);
 
+#if APP_WITH_S5
+		poll_obstacles();	/* before the line: a stop wins over steering */
+#endif
 		if (n == (INT)sizeof(msg)) {
 			/* after START the line task resets its state; drop messages
 			   made with the old state until it has done so (IF-03) */
@@ -678,8 +687,7 @@ EXPORT void mission_task(INT stacd, void *exinf)
 			on_barcode(b);
 		}
 #if APP_WITH_S5
-		poll_obstacles();
-		avoid_step();
+		avoid_step();		/* after on_line(): uses fresh g_lb / g_rb */
 #endif
 
 		/* status line, 2 Hz (none before READY, like integrated_car) */

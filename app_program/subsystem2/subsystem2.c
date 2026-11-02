@@ -55,6 +55,9 @@ EXPORT ER subsystem2_init(void)
 	if (mbf_motor < E_OK) {
 		return mbf_motor;
 	}
+#if APP_WITH_S5
+	/* S5's queues only exist when S5 runs (TEAM.md section 6). The IDs
+	   are still defined, so the compiled-but-unstarted S5 code links. */
 	mbf_obstacle = make_mbf(OBSTACLE_MSG_SIZE, S2_OBST_MSGS);
 	if (mbf_obstacle < E_OK) {
 		return mbf_obstacle;
@@ -63,6 +66,8 @@ EXPORT ER subsystem2_init(void)
 	if (mbf_motion < E_OK) {
 		return mbf_motion;
 	}
+#endif
+	/* flg_faults is shared by every subsystem (IF-12), not just S5. */
 	{
 		T_CFLG cflg = {0};
 
