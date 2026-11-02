@@ -2,7 +2,7 @@
 
 Two parts, one folder:
 
-1. **Telemetry**: the car's packed MQTT data, commands and barcode map (robocar_comms v0.3.1, Change Requirement 1). The network itself runs in the kernel's WiFi task; this folder hands it bytes through two message buffers.
+1. **Telemetry**: the car's packed MQTT data, commands, barcode map and the end-of-run summary (robocar_comms v0.4, Change Requirement 1). The network itself runs in the kernel's WiFi task; this folder hands it bytes through two message buffers.
 2. **Safety Monitor**: every task sets its heartbeat bit; the Safety Monitor checks them every 20 ms, E-stops the car if a task hangs, and runs the hardware watchdog.
 
 ## Files
@@ -39,6 +39,8 @@ Laptop tools: `integrated_car/tools/` (`telemetry_monitor.py`, `packets.py`, `ba
   | 15 | WiFi loss (report only) |
 
   The monitor prints a line whenever it changes, e.g. `[faults] 0x0100: US_NO_ECHO`.
+
+- **Run summary (`run/summary`, new):** at the end of every run (state back to STOPPED, ERROR or IDLE) the car publishes one 16-byte retained message with everything the run produced, consolidated from the same raw data it sent as live data and events: duration, distance, top speed, barcodes read and their letters, junction moves, humps and the highest peak (mission requirement 5), obstacles and the closest one, every fault seen, reconnects and dropped events. Type `summary` for the totals so far. The monitor tallies the raw events itself and prints `[run summary] matches the raw data seen by this monitor`, or the fields that differ. Layout: `packets.h` (`PKT_SUM_*`). Nothing to do in the other subsystems: it is built from the data they already send.
 
 **Safety Monitor (new)**: see below.
 
@@ -103,7 +105,7 @@ Why the car stopped, without the USB console:
 | Where | How | Result (2 Nov 2026) |
 |---|---|---|
 | PC: Safety Monitor logic, MQTT reconnect | `sh testing/subsystem1/pc/run_pc_tests.sh` (repo root, gcc) | ALL PASSED / ALL OK |
-| PC: packed layouts (robocar_comms v0.3.1) | `python test/run_tests.py` in robocar_comms | 493 checks, ALL PASSED |
+| PC: packed layouts and the run summary (robocar_comms v0.4) | `python test/run_tests.py` in robocar_comms | 509 checks, ALL PASSED; end-to-end through Mosquitto: summary matches the raw events |
 | Car: S1-U01 to S1-U07 | `make NET=lwip MQTT=1 TEST=1` | not run yet |
 | Car: S1-M01 to S1-M05 | `testing/subsystem1/TEST_LOG.md` | not run yet |
 

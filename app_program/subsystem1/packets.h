@@ -85,6 +85,7 @@ static pkt_field_t const PKT_ACK_OP             = {  5u,  3u };  /* opcode answe
 #define PKT_OP_RESET_PEAK       (3u)
 #define PKT_OP_SPEED            (4u)
 #define PKT_OP_START            (5u)
+#define PKT_OP_SUMMARY          (6u)    /* send the run summary now (run/summary) */
 #define PKT_OP_UNREADABLE       (7u)    /* in an ack: the command was not 1 byte */
 
 /* Ack result: 0-26 = accepted (SPEED: the speed passed on), else: */
@@ -116,6 +117,35 @@ static pkt_field_t const PKT_EV_OBST_CLEAR_L    = { 23u,  8u };  /* cm, 255 = ou
 static pkt_field_t const PKT_EV_OBST_CLEAR_R    = { 31u,  8u };  /* cm, 255 = out of range  */
 static pkt_field_t const PKT_EV_OBST_ACTION     = { 39u,  3u };  /* avoid_action_t 0-4      */
 /* bits 42-47 reserved, 0 */
+
+/* ---- run/summary: 16 bytes, retained, at the end of every run ----------- */
+/* Everything the run produced, consolidated on the car from the same raw
+ * data that went out as live data and events (the laptop checks the two
+ * agree). Counts saturate; the letters are the first 6 barcodes read.      */
+#define PKT_SUM_LEN             (16u)
+#define PKT_SUM_LETTERS         (6u)
+static pkt_field_t const PKT_SUM_RUN            = {  0u,  4u };  /* run number since boot, wraps */
+static pkt_field_t const PKT_SUM_END_STATE      = {  4u,  4u };  /* robot_state_t at the end     */
+static pkt_field_t const PKT_SUM_DURATION       = {  8u, 12u };  /* s, saturates at 4095         */
+static pkt_field_t const PKT_SUM_DIST           = { 20u, 14u };  /* cm travelled, wraps like live */
+static pkt_field_t const PKT_SUM_MAX_SPEED      = { 34u,  7u };  /* 0.5 cm/s steps, 0-63.5       */
+static pkt_field_t const PKT_SUM_N_BARCODE      = { 41u,  4u };  /* barcodes read                */
+static pkt_field_t const PKT_SUM_N_UNREADABLE   = { 45u,  3u };  /* barcodes not decodable       */
+static pkt_field_t const PKT_SUM_N_JUNCTION     = { 48u,  4u };  /* junction moves made          */
+static pkt_field_t const PKT_SUM_N_UNMAPPED     = { 52u,  3u };  /* junctions with no mapping    */
+static pkt_field_t const PKT_SUM_N_HUMP         = { 55u,  3u };  /* humps                        */
+static pkt_field_t const PKT_SUM_PEAK           = { 58u,  7u };  /* highest hump, 0.1 cm (req. 5) */
+static pkt_field_t const PKT_SUM_N_OBST         = { 65u,  3u };  /* obstacles profiled           */
+static pkt_field_t const PKT_SUM_OBST_MIN       = { 68u,  8u };  /* closest obstacle, cm, 255 = none */
+static pkt_field_t const PKT_SUM_FAULTS_SEEN    = { 76u, 16u };  /* OR of every fault mask seen  */
+static pkt_field_t const PKT_SUM_RECONNECTS     = { 92u,  3u };  /* WiFi/broker reconnects       */
+static pkt_field_t const PKT_SUM_EV_DROP        = { 95u,  3u };  /* events dropped (queue full)  */
+static pkt_field_t const PKT_SUM_LETTER0        = { 98u,  5u };  /* 1st barcode letter, 31 = none */
+static pkt_field_t const PKT_SUM_LETTER1        = {103u,  5u };
+static pkt_field_t const PKT_SUM_LETTER2        = {108u,  5u };
+static pkt_field_t const PKT_SUM_LETTER3        = {113u,  5u };
+static pkt_field_t const PKT_SUM_LETTER4        = {118u,  5u };
+static pkt_field_t const PKT_SUM_LETTER5        = {123u,  5u };
 
 /* ---- cmd/barcode_map: 3 bytes (Buddy 3's layout) ------------------------ */
 #define PKT_MAP_LEN             (3u)

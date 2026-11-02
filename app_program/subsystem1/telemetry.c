@@ -7,9 +7,6 @@
  * (packets.h). The live snapshot is kept packed in RAM (12 bytes) and each
  * setter writes only its own fields; only this task touches it, so the
  * read-modify-writes cannot race.
- *
- * uT-Kernel port (subsystem 1): copied from integrated_car/comms v0.3.1;
- * only the clock (s1_now_ms) and the console (tm_printf) changed.
  */
 #include "telemetry.h"
 #include "comms.h"
@@ -76,6 +73,33 @@ static bool          gb_wifi_lost = false;  /* WiFi lost since it was up   */
 static bool          gb_wifi_clear_armed = false;
 static uint32_t      g_wifi_clear_ms = 0u;
 
+/* Run summary: tallies kept from the same values that go out as live data
+ * and events, consolidated into one message at the end of the run.       */
+typedef struct
+{
+    bool     b_running;
+    uint32_t run_no;
+    uint32_t start_ms;
+    uint32_t max_speed;                 /* PKT_LIVE_SPEED_* units, abs    */
+    uint32_t n_barcode;
+    uint32_t n_unreadable;
+    uint32_t n_junction;
+    uint32_t n_unmapped;
+    uint32_t n_hump;
+    uint32_t peak;                      /* PKT_SUM_PEAK units             */
+    uint32_t n_obst;
+    uint32_t obst_min;                  /* cm, 255 = none                 */
+    uint32_t faults_seen;
+    uint32_t reconnects_at_start;
+    uint32_t ev_drop_at_start;
+    uint8_t  letters[PKT_SUM_LETTERS];
+    uint32_t n_letters;
+} run_t;
+
+static run_t    g_run;
+static uint8_t  g_summary[PKT_SUM_LEN];
+static bool     gb_summary_pending = false;
+
 /* ---------------------------------------------------------------------- */
 /* Helpers                                                                 */
 /* ---------------------------------------------------------------------- */
@@ -125,13 +149,13 @@ static uint8_t apply_barcode_map(uint8_t const * p_payload, uint16_t len)
     if (status != NAV_MAP_OK)
     {
         tm_printf((UB *)"[telem] barcode map rejected, code %u - previous map kept\n",
-                  (unsigned)status);
+               (unsigned)status);
     }
     else if (len >= 3u)
     {
         tm_printf((UB *)"[telem] barcode map applied (payload %02X %02X %02X)\n",
-                  (unsigned)p_payload[0], (unsigned)p_payload[1],
-                  (unsigned)p_payload[2]);
+               (unsigned)p_payload[0], (unsigned)p_payload[1],
+               (unsigned)p_payload[2]);
     }
     else
     {
@@ -219,9 +243,84 @@ static void track_wifi_loss(comms_link_t link)
 /* ---------------------------------------------------------------------- */
 /* Public API                                                              */
 /* ---------------------------------------------------------------------- */
+/* A run = the car is doing something (not IDLE, STOPPED or ERROR). */
+static bool is_running_state(uint32_t state)
+{
+    return (state != (uint32_t)ROBOT_IDLE) && (state != (uint32_t)ROBOT_STOPPED) &&
+           (state != (uint32_t)ROBOT_ERROR);
+}
+
+static void run_start(void)
+{
+    comms_stats_t st;
+    uint32_t      run_no = (g_run.run_no + 1u) & 0xFu;
+
+    comms_get_stats(&st);
+    memset(&g_run, 0, sizeof(g_run));
+    g_run.b_running = true;
+    g_run.run_no    = run_no;
+    g_run.start_ms  = now_ms();
+    g_run.obst_min  = pkt_max(PKT_SUM_OBST_MIN);
+    g_run.faults_seen = pkt_get(g_live, PKT_LIVE_FAULTS);
+    g_run.reconnects_at_start = st.reconnects;
+    g_run.ev_drop_at_start    = st.events_dropped;
+}
+
+static void build_summary(void)
+{
+    comms_stats_t st;
+    uint32_t      i;
+    uint32_t      dur_s = (now_ms() - g_run.start_ms) / 1000u;
+
+    comms_get_stats(&st);
+    memset(g_summary, 0, sizeof(g_summary));
+    pkt_put(g_summary, PKT_SUM_RUN,          g_run.run_no);
+    pkt_put(g_summary, PKT_SUM_END_STATE,    pkt_get(g_live, PKT_LIVE_STATE));
+    pkt_put(g_summary, PKT_SUM_DURATION,     pkt_sat(dur_s, PKT_SUM_DURATION));
+    pkt_put(g_summary, PKT_SUM_DIST,         pkt_get(g_live, PKT_LIVE_DIST));
+    pkt_put(g_summary, PKT_SUM_MAX_SPEED,    pkt_sat(g_run.max_speed, PKT_SUM_MAX_SPEED));
+    pkt_put(g_summary, PKT_SUM_N_BARCODE,    pkt_sat(g_run.n_barcode, PKT_SUM_N_BARCODE));
+    pkt_put(g_summary, PKT_SUM_N_UNREADABLE, pkt_sat(g_run.n_unreadable, PKT_SUM_N_UNREADABLE));
+    pkt_put(g_summary, PKT_SUM_N_JUNCTION,   pkt_sat(g_run.n_junction, PKT_SUM_N_JUNCTION));
+    pkt_put(g_summary, PKT_SUM_N_UNMAPPED,   pkt_sat(g_run.n_unmapped, PKT_SUM_N_UNMAPPED));
+    pkt_put(g_summary, PKT_SUM_N_HUMP,       pkt_sat(g_run.n_hump, PKT_SUM_N_HUMP));
+    pkt_put(g_summary, PKT_SUM_PEAK,         pkt_sat(g_run.peak, PKT_SUM_PEAK));
+    pkt_put(g_summary, PKT_SUM_N_OBST,       pkt_sat(g_run.n_obst, PKT_SUM_N_OBST));
+    pkt_put(g_summary, PKT_SUM_OBST_MIN,     g_run.obst_min);
+    pkt_put(g_summary, PKT_SUM_FAULTS_SEEN,  g_run.faults_seen | (gb_wifi_lost ? TELEM_FAULT_WIFI_LOSS : 0u));
+    pkt_put(g_summary, PKT_SUM_RECONNECTS,   pkt_sat(st.reconnects - g_run.reconnects_at_start, PKT_SUM_RECONNECTS));
+    pkt_put(g_summary, PKT_SUM_EV_DROP,      pkt_sat(st.events_dropped - g_run.ev_drop_at_start, PKT_SUM_EV_DROP));
+    for (i = 0u; i < PKT_SUM_LETTERS; i++)
+    {
+        pkt_field_t f = { (uint8_t)(PKT_SUM_LETTER0.pos + (5u * i)), 5u };
+        pkt_put(g_summary, f, (i < g_run.n_letters) ? g_run.letters[i] : TELEM_LETTER_NONE);
+    }
+}
+
+/* Retained, QoS 1: a dashboard that connects later still sees the last run. */
+static void send_summary(void)
+{
+    if (comms_publish("run/summary", g_summary, PKT_SUM_LEN, 1u, true))
+    {
+        gb_summary_pending = false;
+    }
+    else
+    {
+        gb_summary_pending = true;      /* offline or buffer full: retry  */
+    }
+}
+
+void telem_publish_summary(void)
+{
+    build_summary();
+    send_summary();
+}
+
 void telem_init(void)
 {
     memset(g_live, 0, sizeof(g_live));      /* state IDLE, STATIONARY, all 0 */
+    memset(&g_run, 0, sizeof(g_run));
+    gb_summary_pending = false;
     memset(g_odom, 0, sizeof(g_odom));
     g_ev_head = 0u;
     g_ev_tail = 0u;
@@ -250,6 +349,10 @@ void telem_poll(void)
     }
 
     flush_events();
+    if (gb_summary_pending)
+    {
+        send_summary();
+    }
 
     if (reached(g_next_live_ms))
     {
@@ -276,6 +379,20 @@ void telem_set_state(robot_state_t state)
         pkt_put(&ev, PKT_EV_STATE_TO, new_state);
         pkt_put(g_live, PKT_LIVE_STATE, new_state);
         event_push(EV_STATE, &ev, PKT_EV_STATE_LEN);
+
+        if (!g_run.b_running && is_running_state(new_state))
+        {
+            run_start();
+        }
+        else if (g_run.b_running && !is_running_state(new_state))
+        {
+            g_run.b_running = false;        /* end of run: consolidate */
+            telem_publish_summary();
+        }
+        else
+        {
+            /* still running, or still stopped */
+        }
     }
 }
 
@@ -287,6 +404,14 @@ void telem_set_motion(float speed_l_cms, float speed_r_cms,
     pkt_put(g_live, PKT_LIVE_SPEED_R,
             (uint32_t)pkt_scale_s(speed_r_cms, PKT_SPEED_STEP_CMS, PKT_LIVE_SPEED_R.width));
     pkt_put(g_live, PKT_LIVE_DIST, pkt_wrap(distance_cm, PKT_DIST_STEP_CM));  /* wraps */
+    {
+        int32_t  l = pkt_get_signed(g_live, PKT_LIVE_SPEED_L);
+        int32_t  r = pkt_get_signed(g_live, PKT_LIVE_SPEED_R);
+        uint32_t m = (uint32_t)((l < 0) ? -l : l);
+        uint32_t n = (uint32_t)((r < 0) ? -r : r);
+        if (n > m) { m = n; }
+        if (m > g_run.max_speed) { g_run.max_speed = m; }
+    }
     pkt_put(g_odom, PKT_ODOM_ENC_L, (uint32_t)enc_l);   /* low 16 bits, wraps */
     pkt_put(g_odom, PKT_ODOM_ENC_R, (uint32_t)enc_r);
 }
@@ -311,6 +436,7 @@ void telem_set_imu(float pitch_deg, float yaw_rate_dps, imu_event_t event)
 void telem_set_faults(uint16_t fault_mask)
 {
     pkt_put(g_live, PKT_LIVE_FAULTS, fault_mask);
+    g_run.faults_seen |= fault_mask;
 }
 
 bool telem_wifi_lost(void)
@@ -359,13 +485,36 @@ uint8_t telem_pack_letter_move(char letter, telem_move_t move)
 
 void telem_event_barcode(char letter, telem_move_t move)
 {
-    uint8_t byte = telem_pack_letter_move(letter, move);
+    uint8_t  byte = telem_pack_letter_move(letter, move);
+    uint32_t idx  = pkt_get(&byte, PKT_EV_LETTER);
+
+    if (idx == TELEM_LETTER_NONE)
+    {
+        g_run.n_unreadable++;
+    }
+    else
+    {
+        g_run.n_barcode++;
+        if (g_run.n_letters < PKT_SUM_LETTERS)
+        {
+            g_run.letters[g_run.n_letters++] = (uint8_t)idx;
+        }
+    }
     event_push(EV_BARCODE, &byte, PKT_EV_LM_LEN);
 }
 
 void telem_event_junction(char letter, telem_move_t move)
 {
     uint8_t byte = telem_pack_letter_move(letter, move);
+
+    if (move == TELEM_MOVE_UNMAPPED)
+    {
+        g_run.n_unmapped++;
+    }
+    else
+    {
+        g_run.n_junction++;
+    }
     event_push(EV_JUNCTION, &byte, PKT_EV_LM_LEN);
 }
 
@@ -377,6 +526,11 @@ void telem_event_hump(float peak_cm)
     if (peak > pkt_get(g_live, PKT_LIVE_PEAK))
     {
         pkt_put(g_live, PKT_LIVE_PEAK, peak);           /* highest this run */
+    }
+    g_run.n_hump++;
+    if (peak > g_run.peak)
+    {
+        g_run.peak = peak;                  /* kept even after reset_peak */
     }
 
     memset(ev, 0, sizeof(ev));
@@ -403,6 +557,11 @@ void telem_event_obstacle(obstacle_profile_t const * p_profile)
     pkt_put(ev, PKT_EV_OBST_CLEAR_L, obstacle_cm(p_profile->clear_left_cm, PKT_EV_OBST_CLEAR_L));
     pkt_put(ev, PKT_EV_OBST_CLEAR_R, obstacle_cm(p_profile->clear_right_cm, PKT_EV_OBST_CLEAR_R));
     pkt_put(ev, PKT_EV_OBST_ACTION, pkt_sat((uint32_t)p_profile->action, PKT_EV_OBST_ACTION));
+    g_run.n_obst++;
+    if (pkt_get(ev, PKT_EV_OBST_DIST) < g_run.obst_min)
+    {
+        g_run.obst_min = pkt_get(ev, PKT_EV_OBST_DIST);
+    }
     event_push(EV_OBSTACLE, ev, PKT_EV_OBST_LEN);
 }
 

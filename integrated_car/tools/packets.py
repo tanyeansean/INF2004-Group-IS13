@@ -83,7 +83,34 @@ LAYOUTS = {
     "map": (3, {
         "bits":      (0, 20, False, 1, "PKT_MAP_BITS"),
     }),
+    # run/summary: the whole run consolidated on the car (16 bytes, retained)
+    "summary": (16, {
+        "run":          (0, 4, False, 1, "PKT_SUM_RUN"),
+        "end_state":    (4, 4, False, 1, "PKT_SUM_END_STATE"),
+        "duration":     (8, 12, False, 1, "PKT_SUM_DURATION"),
+        "dist":         (20, 14, False, 1, "PKT_SUM_DIST"),
+        "max_speed":    (34, 7, False, 0.5, "PKT_SUM_MAX_SPEED"),
+        "n_barcode":    (41, 4, False, 1, "PKT_SUM_N_BARCODE"),
+        "n_unreadable": (45, 3, False, 1, "PKT_SUM_N_UNREADABLE"),
+        "n_junction":   (48, 4, False, 1, "PKT_SUM_N_JUNCTION"),
+        "n_unmapped":   (52, 3, False, 1, "PKT_SUM_N_UNMAPPED"),
+        "n_hump":       (55, 3, False, 1, "PKT_SUM_N_HUMP"),
+        "peak":         (58, 7, False, 0.1, "PKT_SUM_PEAK"),
+        "n_obst":       (65, 3, False, 1, "PKT_SUM_N_OBST"),
+        "obst_min":     (68, 8, False, 1, "PKT_SUM_OBST_MIN"),
+        "faults_seen":  (76, 16, False, 1, "PKT_SUM_FAULTS_SEEN"),
+        "reconnects":   (92, 3, False, 1, "PKT_SUM_RECONNECTS"),
+        "ev_drop":      (95, 3, False, 1, "PKT_SUM_EV_DROP"),
+        "letter0":      (98, 5, False, 1, "PKT_SUM_LETTER0"),
+        "letter1":      (103, 5, False, 1, "PKT_SUM_LETTER1"),
+        "letter2":      (108, 5, False, 1, "PKT_SUM_LETTER2"),
+        "letter3":      (113, 5, False, 1, "PKT_SUM_LETTER3"),
+        "letter4":      (118, 5, False, 1, "PKT_SUM_LETTER4"),
+        "letter5":      (123, 5, False, 1, "PKT_SUM_LETTER5"),
+    }),
 }
+SUMMARY_LETTERS = 6
+RUNNING_STATES = {1, 2, 3, 4, 5, 6}    # a run is on: not IDLE, STOPPED or ERROR
 
 # Which message each topic (under the root) carries.
 TOPICS = {
@@ -100,6 +127,7 @@ TOPICS = {
     "cmd/ack": "ack",
     "cmd/barcode_map": "map",
     "cmd/barcode_map/ack": "map_ack",
+    "run/summary": "summary",
 }
 
 STATES = ["IDLE", "LINE_FOLLOW", "TURNING", "ON_HUMP", "OBSTACLE_SCAN",
@@ -107,7 +135,8 @@ STATES = ["IDLE", "LINE_FOLLOW", "TURNING", "ON_HUMP", "OBSTACLE_SCAN",
 MOTIONS = ["STATIONARY", "ACCELERATING", "TURNING", "CLIMBING", "DESCENDING", "IMPACT"]
 ACTIONS = ["STOP", "CONTINUE", "LEFT", "RIGHT", "REVERSE"]
 # START and SPEED have the top bit set, so no plain ASCII byte can mean them.
-OPS = {"ping": 0, "stop": 1, "estop": 2, "reset_peak": 3, "speed": 4, "start": 5}
+OPS = {"ping": 0, "stop": 1, "estop": 2, "reset_peak": 3, "speed": 4, "start": 5,
+       "summary": 6}
 OP_NAMES = {v: k.upper() for k, v in OPS.items()}
 OP_NAMES[7] = "(unreadable)"
 SPEED_MAX_CMS = 20                 # the car caps speed commands here
@@ -245,6 +274,31 @@ def describe_live(payload):
             f"{name(MOTIONS, int(d['motion']))} peak={d['peak']:.1f}cm faults=0x{faults:04x}{flag}")
 
 
+def summary_letters(s):
+    """The barcode letters in a decoded summary, in the order read."""
+    out = []
+    for i in range(SUMMARY_LETTERS):
+        v = int(s[f"letter{i}"])
+        if v < 26:
+            out.append(chr(ord("A") + v))
+    return out
+
+
+def describe_summary(payload):
+    s = scaled("summary", payload)
+    letters = "".join(summary_letters(s)) or "-"
+    closest = "none" if int(s["obst_min"]) >= OUT_OF_RANGE_CM else f"closest {int(s['obst_min'])} cm"
+    state = int(s["end_state"])
+    how = f"so far ({name(STATES, state)})" if state in RUNNING_STATES else f"ended {name(STATES, state)}"
+    return (f"run {int(s['run'])} {how} after {int(s['duration'])} s, "
+            f"{int(s['dist'])} cm, top speed {s['max_speed']:.1f} cm/s | barcodes {int(s['n_barcode'])} ({letters})"
+            f", unreadable {int(s['n_unreadable'])} | junction moves {int(s['n_junction'])}, "
+            f"unmapped {int(s['n_unmapped'])} | humps {int(s['n_hump'])}, highest {s['peak']:.1f} cm | "
+            f"obstacles {int(s['n_obst'])}, {closest} | faults seen 0x{int(s['faults_seen']):04x} "
+            f"({describe_faults(int(s['faults_seen']))}) | reconnects {int(s['reconnects'])}, "
+            f"events dropped {int(s['ev_drop'])}")
+
+
 def cm(x):
     return "out of range" if x >= OUT_OF_RANGE_CM else f"{x} cm"
 
@@ -271,6 +325,8 @@ def describe(sub, payload):
             return describe_heartbeat(payload)
         if msg == "live":
             return describe_live(payload)
+        if msg == "summary":
+            return describe_summary(payload)
         if msg == "cmd":
             c = unpack("cmd", payload)
             arg = f" {c['arg']}" if c["op"] == OPS["speed"] else ""
@@ -371,6 +427,12 @@ def self_test():
     u.reset()
     checks.append((u.update(3) == 3, "unwrap restarts after reset()"))
 
+    sm = pack("summary", run=3, end_state=7, duration=61, dist=320, max_speed=41, n_barcode=2,
+              n_junction=2, n_hump=2, peak=30, n_obst=1, obst_min=19, faults_seen=0,
+              letter0=5, letter1=25, letter2=31, letter3=31, letter4=31, letter5=31)
+    got = describe_summary(sm)
+    checks.append(("run 3 ended STOPPED after 61 s, 320 cm, top speed 20.5 cm/s | barcodes 2 (FZ)" in got
+                   and "humps 2, highest 3.0 cm | obstacles 1, closest 19 cm" in got, f"summary text: {got}"))
     checks.append((describe_faults(0) == "none", "no faults"))
     checks.append((describe_faults(0x0100) == "US_NO_ECHO", "ultrasonic fault name"))
     got = describe_faults(0x8000 | (3 << 12) | 0x0040)

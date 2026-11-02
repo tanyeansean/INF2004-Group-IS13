@@ -24,6 +24,7 @@ Define a test here before running it. Test IDs never change.
 | S1-M03 | Hung task stops the car | NFR8, IF-04, flg_faults | manual | Owner adds a temporary `tk_slp_tsk(TMO_FEVR);` in their task loop after READY; start the car | Console `[safety] HUNG (no heartbeat) - E-stop: <task>`; car stops; laptop `[faults] TASK_HUNG, hung task: <task>` |
 | S1-M04 | Hung Mission or Motor Control resets the chip | NFR8, watchdog | manual | As S1-M03 in Mission Control or Motor Control | Chip resets within ~100 ms of the report; next boot prints `[safety] last reset: watchdog, <task> was hung`; laptop shows the task for 10 s |
 | S1-M05 | WiFi signal strength in the heartbeat | heartbeat | manual | Laptop monitor while online | `rssi=-NNdBm` on the live line (not 0) |
+| S1-M06 | Run summary consolidates the run | req. 5, run/summary | manual | Start, pass a barcode, a hump and an obstacle, stop; type `summary` mid-run too | `[run summary] run N ended STOPPED ...` with the counts, letters and highest hump; `matches the raw data seen by this monitor` |
 
 *Method:* **auto** = `TEST_CHECK` in code, result printed on the console;
 **auto (PC)** = runs on a laptop with gcc, no Pico;

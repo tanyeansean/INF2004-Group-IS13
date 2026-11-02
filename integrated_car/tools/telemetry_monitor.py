@@ -10,7 +10,7 @@ Every payload is packed binary (Change Requirement 1, layouts in packets.py).
 The monitor decodes them: live telemetry on one line, events as they arrive.
 
 Commands you type are packed into 1 byte before they are sent:
-    start | stop | estop | speed N (cm/s, the car caps it at 20) | reset_peak | ping
+    start | stop | estop | speed N (cm/s, the car caps it at 20) | reset_peak | summary | ping
 
 Barcode map (the 4 letters the instructor announces):
     map F Z W X                           letters for LEFT RIGHT FORWARD U-TURN
@@ -48,7 +48,7 @@ ACK_WAIT_S = 3.0
 
 MAP_HELP = ("map F Z W X  (letters for LEFT RIGHT FORWARD U-TURN) | "
             "map A=forward B=left C=right D=uturn | map show | map clear")
-CMD_HELP = "start, stop, estop, speed N, reset_peak, ping"
+CMD_HELP = "start, stop, estop, speed N, reset_peak, summary, ping"
 
 log_file = open(args.log, "a", newline="")
 log = csv.writer(log_file)
@@ -64,6 +64,97 @@ enc = (pk.Unwrap(16), pk.Unwrap(16))
 enc_now = (None, None)
 dist = pk.Unwrap(14, signed_start=False)       # distance wraps every 163.84 m
 none_beats = 0                  # heartbeats in a row saying "no map"
+
+# Laptop-side tally of the raw events of the current run, to check the
+# car's run/summary against. None until a run has started while we listen.
+raw = None
+RUNNING = pk.RUNNING_STATES         # STATES that mean "a run is on"
+
+
+def raw_reset():
+    return {"barcodes": [], "unreadable": 0, "junction": 0, "unmapped": 0,
+            "humps": 0, "peak": 0.0, "obstacles": 0, "obst_min": 255,
+            "max_speed": 0.0, "dist": 0, "faults": 0}
+
+
+def raw_note(sub, payload):
+    """Feed every car message into the laptop's own tally."""
+    global raw
+    try:
+        if sub == "event/state":
+            e = pk.unpack("ev_state", payload)
+            if e["to"] in RUNNING and e["from"] not in RUNNING:
+                raw = raw_reset()
+            return
+        if raw is None:
+            return
+        if sub == "event/barcode":
+            letter, _move = bm.decode_letter_move(payload)
+            if letter is None:
+                raw["unreadable"] += 1
+            else:
+                raw["barcodes"].append(letter)
+        elif sub == "event/junction":
+            _letter, move = bm.decode_letter_move(payload)
+            raw["unmapped" if move == "UNMAPPED" else "junction"] += 1
+        elif sub == "event/hump":
+            e = pk.scaled("ev_hump", payload)
+            raw["humps"] += 1
+            raw["peak"] = max(raw["peak"], e["peak"])
+        elif sub == "event/obstacle":
+            e = pk.unpack("ev_obstacle", payload)
+            raw["obstacles"] += 1
+            raw["obst_min"] = min(raw["obst_min"], e["dist"])
+        elif sub == "telemetry/live":
+            d = pk.scaled("live", payload)
+            raw["max_speed"] = max(raw["max_speed"], abs(d["speed_l"]), abs(d["speed_r"]))
+            raw["dist"] = int(d["dist"])
+            raw["faults"] |= int(d["faults"])
+    except ValueError:
+        pass
+
+
+def check_summary(payload, retained):
+    """Print the car's summary and compare it with the raw events we saw."""
+    s = pk.scaled("summary", payload)
+    print(f"\n[run summary] {pk.describe_summary(payload)}")
+    if retained and raw is None:
+        print("[run summary] stored on the broker from an earlier run (nothing to compare)")
+        return
+    if raw is None:
+        print("[run summary] the run started before this monitor did: no raw data to compare")
+        return
+    pairs = [
+        ("barcodes", int(s["n_barcode"]), len(raw["barcodes"])),
+        ("letters", "".join(pk.summary_letters(s)), "".join(raw["barcodes"][:pk.SUMMARY_LETTERS])),
+        ("unreadable", int(s["n_unreadable"]), raw["unreadable"]),
+        ("junction moves", int(s["n_junction"]), raw["junction"]),
+        ("unmapped", int(s["n_unmapped"]), raw["unmapped"]),
+        ("humps", int(s["n_hump"]), raw["humps"]),
+        ("highest hump cm", round(s["peak"], 1), round(raw["peak"], 1)),
+        ("obstacles", int(s["n_obst"]), raw["obstacles"]),
+        ("closest obstacle cm", int(s["obst_min"]), raw["obst_min"]),
+        ("distance cm", int(s["dist"]), raw["dist"]),
+        ("top speed cm/s", round(s["max_speed"], 1), round(raw["max_speed"], 1)),
+    ]
+    # Counts saturate on the car (3- and 4-bit fields): "7" means 7 or more.
+    bits = {"unreadable": 3, "unmapped": 3, "humps": 3, "obstacles": 3,
+            "barcodes": 4, "junction moves": 4}
+    diffs = []
+    # Live data is sampled 5x a second, so the car's final distance can be a
+    # little past the last live sample the laptop saw.
+    slack = int(s["max_speed"] * 0.25) + 1
+    for what, car, laptop in pairs:
+        if what in bits and car == (1 << bits[what]) - 1 and laptop >= car:
+            continue
+        if what == "distance cm" and 0 <= car - laptop <= slack:
+            continue
+        if car != laptop:
+            diffs.append(f"{what}: car {car}, raw events {laptop}")
+    if diffs:
+        print("[run summary] DIFFERS from the raw data: " + "; ".join(diffs))
+    else:
+        print("[run summary] matches the raw data seen by this monitor")
 
 
 def describe_car_map(held, bits):
@@ -130,6 +221,7 @@ def on_message(client, userdata, msg):
     text = pk.describe(sub, msg.payload)
     log.writerow([f"{time.time():.3f}", sub, msg.payload.hex(" "), text])
     log_file.flush()
+    raw_note(sub, msg.payload)
 
     if sub == "status":
         last_live_seq = None            # the car (re)connected or went away:
@@ -148,6 +240,11 @@ def on_message(client, userdata, msg):
             print(f"\n[telemetry/odometry] {text}")
     elif sub == "heartbeat":
         on_heartbeat(msg.payload)
+    elif sub == "run/summary":
+        try:
+            check_summary(msg.payload, msg.retain)
+        except ValueError as e:
+            print(f"\n[{sub}] {msg.payload.hex(' ')} ({e})")
     elif sub == "cmd/barcode_map":
         broker_map = msg.payload
         where = "stored on broker" if msg.retain else "sent"

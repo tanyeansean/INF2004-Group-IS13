@@ -41,6 +41,9 @@ typedef enum
     CMD_SET_SPEED,           /**< opcode 4 - arg = target speed, cm/s,
                                   already capped at CMD_SPEED_MAX_CMS     */
     CMD_RESET_PEAK,          /**< opcode 3 - clear stored hump peak       */
+    CMD_SUMMARY,             /**< opcode 6 - publish the run summary now;
+                                  Telemetry's own data: call
+                                  telem_publish_summary() in the handler  */
     CMD_UNKNOWN
 } comms_cmd_type_t;
 

@@ -143,6 +143,18 @@ void telem_event_obstacle(obstacle_profile_t const * p_profile); /* Buddy 5 */
 /* Clears the stored highest hump peak (also via the "reset_peak" command). */
 void telem_reset_peak(void);
 
+/* ---- RUN SUMMARY (run/summary, 16 bytes, retained) ---------------------- */
+/* A run starts when the state leaves IDLE / STOPPED / ERROR and ends when
+ * it comes back. At the end Telemetry publishes one consolidated message
+ * built from the same raw data it sent as live data and events: duration,
+ * distance, top speed, barcodes read (and their letters), junction moves,
+ * humps and the highest peak (mission requirement 5), obstacles and the
+ * closest one, every fault seen, reconnects and dropped events. The laptop
+ * tallies the raw events itself and reports any difference.
+ * Call this from the CMD_SUMMARY handler to send the current totals at any
+ * time (mid-run: so far). Retried while offline.                          */
+void telem_publish_summary(void);
+
 /* The 1-byte payload of event/barcode and event/junction:
  * bits 0-4 letter (0-25, TELEM_LETTER_NONE = none), bits 5-7 move.
  * Exposed so the pack/unpack test can check it against the laptop decoder. */

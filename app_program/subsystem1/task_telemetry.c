@@ -30,6 +30,9 @@ LOCAL bool on_command(comms_cmd_t const *p_cmd)
 	case CMD_RESET_PEAK:
 		telem_reset_peak();		/* Telemetry's own data */
 		return true;
+	case CMD_SUMMARY:
+		telem_publish_summary();	/* run totals so far */
+		return true;
 	case CMD_START:
 		if (!s3_is_calibrated()) {
 			tm_printf((UB *)"[car] start ignored - still calibrating\n");
