@@ -25,7 +25,7 @@
 #include "../subsystem1/subsystem1.h"	/* flg_hb, IF-05 s1_post_*, link */
 #include "../subsystem3/subsystem3.h"	/* calibration, IF-03 line reset */
 #if APP_WITH_S5
-#include "../subsystem5/subsystem5.h"	/* IF-06 reply flag flg_avoid, AVOID_EVT_* */
+#include "../subsystem5/subsystem5.h"	/* flg_avoid, AVOID_EVT_* (IF-09/10 replies) */
 #endif
 
 /* ---- Tuning (open loop: no encoders yet - same as integrated_car) ---- */
@@ -69,25 +69,9 @@
 #define REG_ALIAS_SET		(0x2000U)
 #define REG_ALIAS_CLR		(0x3000U)
 
-/* ---- Obstacle avoidance (IF-06, with subsystem 5).  Open loop like the
- *      barcode turns: every distance is a time at the base PWM.  All TUNE
- *      values need measuring on the car. ---- */
-#define OBS_SETTLE_MS		150U	/* let the car stop rolling before S5 scans */
-#define OBS_WAIT_PLAN_MS	5000U	/* stopped this long with no plan -> give up */
-#define OBS_MS_PER_CM		65U	/* TUNE: ms to drive 1 cm at the base PWM */
-#define OBS_TURN_45_MS		(TURN_90_MS / 2U)	/* spin 45 deg, same calibration as turns */
-#define OBS_PASS_CM		30U	/* TUNE: drive this far alongside the obstacle */
-#define OBS_SEEK_FACTOR		2U	/* look for the line up to 2x the expected distance */
-#define OBS_DEFAULT_SIDE_CM	20U	/* if S5 gives no sidestep (255) */
-#define OBS_REVERSE_CM		10U	/* TUNE: back off this far, then S5 rescans */
-#define OBS_BYPASS_LIMIT_MS	8000U	/* whole bypass; S5's OA_BYPASS_TIMEOUT_MS is longer */
-#define OBS_ROOT2_X100		141U	/* sqrt(2): 45 deg legs are 1.41x the sidestep */
-#define OBS_SIDESTEP_NONE	255U	/* obstacle_msg.h: sidestep 255 = n/a */
-
-typedef enum {
-	CAR_IDLE = 0, CAR_FOLLOW, CAR_MANEUVER,
-	CAR_AVOID		/* stopped for / driving around an obstacle (S5) */
-} car_mode_t;
+/* CAR_AVOID: subsystem 5 has the wheels. Line steering is off and only
+   S5's motion_q moves are driven, until S5 sends CLEAR (or FAULT). */
+typedef enum { CAR_IDLE = 0, CAR_FOLLOW, CAR_MANEUVER, CAR_AVOID } car_mode_t;
 
 /* Mission Control's state: this task only. */
 LOCAL car_mode_t	g_mode = CAR_IDLE;
@@ -131,9 +115,9 @@ LOCAL void car_stop(robot_state_t why)
 {
 	motor_set(0, 0);
 #if APP_WITH_S5
-	/* Leaving an avoid without finishing it (give-up, STOP, ESTOP, GP20):
-	   S5 is waiting for MOTORS_STOPPED or LINE_REACQUIRED that will never
-	   come, and would latch a TIMEOUT "fault". Tell it to stand down. */
+	/* Leaving an avoid early (STOP, ESTOP, GP20, give-up): S5 is waiting
+	   for a reply that will never come. Tell it, so it goes back to
+	   MONITOR instead of timing out into a FAULT. */
 	if (g_mode == CAR_AVOID) {
 		(void)tk_set_flg(flg_avoid, AVOID_EVT_ABORT);
 	}
@@ -143,15 +127,6 @@ LOCAL void car_stop(robot_state_t why)
 	s1_post_state(why);
 }
 
-/* Back to line following without the START checks (after a bypass). */
-LOCAL void car_resume_follow(void)
-{
-	s3_request_line_reset();	/* = line_follow_reset(ls) in main.c */
-	g_hold_until_ms = 0U;
-	g_mode = CAR_FOLLOW;
-	s1_post_state(ROBOT_LINE_FOLLOW);
-}
-
 LOCAL void car_start(void)
 {
 	if (!s3_is_calibrated()) {
@@ -159,15 +134,18 @@ LOCAL void car_start(void)
 		return;
 	}
 #if APP_WITH_S5
-	/* A START also clears S5's latched fault: drop its fault bits (only
-	   Mission Control clears fault bits) and tell it to resume. */
+	/* START also clears S5's latched fault: only Mission Control clears
+	   fault bits. RESUME takes S5 out of its FAULT state. */
 	(void)tk_clr_flg(flg_faults, ~(UINT)(FAULT_BIT_US_NO_ECHO | FAULT_BIT_NO_SAFE_RTE |
-					     FAULT_BIT_US_TIMEOUT));
+					      FAULT_BIT_US_TIMEOUT | FAULT_BIT_NO_LINE));
 	if (s5_get_state() == S5_STATE_FAULT) {
 		(void)tk_set_flg(flg_avoid, AVOID_EVT_RESUME);
 	}
 #endif
-	car_resume_follow();
+	s3_request_line_reset();	/* = line_follow_reset(ls) in main.c */
+	g_hold_until_ms = 0U;
+	g_mode = CAR_FOLLOW;
+	s1_post_state(ROBOT_LINE_FOLLOW);
 	tm_printf((UB *)"[car] START (base PWM M1=%d M2=%d)\n", g_base_m1, g_base_m2);
 }
 
@@ -216,67 +194,50 @@ LOCAL void maneuver_step(void)
 
 #if APP_WITH_S5
 /* =====================================================================
- *  Obstacle avoidance (IF-06).  Subsystem 5 senses and plans; this task
- *  owns the wheels and drives the bypass.  Handshake:
+ *  Obstacle avoidance: motion executor for subsystem 5 (IF-09, IF-10).
  *
- *    S5: OBSTACLE  -> stop at once, wait OBS_SETTLE_MS, reply MOTORS_STOPPED
- *    S5: PLAN LEFT/RIGHT -> timed bypass (below), reply LINE_REACQUIRED
- *    S5: PLAN REVERSE    -> back off OBS_REVERSE_CM, reply MOTORS_STOPPED
- *    S5: PLAN STOP / FAULT -> stop, stay stopped until START
- *    S5: CLEAR (while stopped for it) -> obstacle gone, resume line following
- *    S2: MC_READY once, just before the main loop -> S5 starts pinging
- *    S2: ABORT whenever the car leaves CAR_AVOID via car_stop() (give-up,
- *        STOP, ESTOP, GP20) -> S5 returns to MONITOR instead of timing out
+ *  S5 owns the avoidance: it profiles the obstacle, plans the bypass,
+ *  drives it and recovers the line (project brief, Buddy 5 stages 4-5).
+ *  This task only owns the wheels, so it:
+ *    OBSTACLE  -> stops at once, CAR_AVOID, MOTORS_STOPPED after settling
+ *    motion_q  -> drives that one move, then MOVE_DONE (or LINE_FOUND)
+ *    CLEAR     -> S5 is done: line following again
+ *    FAULT     -> stops, idle until START
+ *  If the car is IDLE, nothing moves and every request is answered at
+ *  once, so S5 can be tested on the bench with the wheels still.
  *
- *  Bypass on side D (D = left or right), all open loop:
- *    TURN_OUT  spin 45 deg toward D
- *    OUT       forward sidestep * sqrt(2)   (ends sidestep cm off the line)
- *    STRAIGHT  spin 45 deg back             (parallel to the line)
- *    PASS      forward OBS_PASS_CM          (alongside the obstacle)
- *    TURN_IN   spin 45 deg toward the line
- *    SEEK      forward until a front IR sensor sees black (or give up)
- *    ALIGN     spin 45 deg back toward D    (heading along the line again)
- *  then line following takes over.  S5 keeps pinging ahead the whole time
- *  and sends a new OBSTACLE if something gets too close.
- *  If the car is NOT driving (idle), S5's messages are answered at once and
- *  nothing moves, so S5 can be tested on the bench with the wheels still.
+ *  Open loop until the encoders + PID exist: a distance is a time at
+ *  AV_DRIVE_PWM, an angle a time at AV_TURN_PWM. Both need measuring.
+ *  Gentler than the barcode turns on purpose: lower PWM, and the car
+ *  pauses AV_GAP_MS between moves so it never flips straight from a spin
+ *  into a drive. Power is constant for the whole move, so the distance
+ *  stays proportional to the time (no ramp: it only made the short
+ *  open-loop moves fall short). Stops are instant.
  * ===================================================================== */
-typedef enum {
-	AV_STOPPING = 0, AV_WAIT_PLAN, AV_REVERSE,
-	AV_TURN_OUT, AV_OUT, AV_STRAIGHT, AV_PASS, AV_TURN_IN, AV_SEEK, AV_ALIGN
-} avoid_phase_t;
+#define AV_DRIVE_PWM		50	/* TUNE: straight moves. The line-follow
+					   base (36) barely moves from a standstill */
+#define AV_TURN_PWM		80	/* TUNE: spins. Softer than TURN_PWM (130),
+					   so its own calibration below            */
+#define AV_MS_PER_CM		50U	/* TUNE: command FWD 30 cm, measure, scale */
+#define AV_MS_PER_DEG		8U	/* TUNE: command a 90 deg turn, measure   */
+#define AV_GAP_MS		150U	/* still between two moves                 */
+#define AV_SETTLE_MS		150U	/* let the car stop rolling before S5 scans */
+#define AV_IDLE_LIMIT_MS	8000U	/* CAR_AVOID, no move running and nothing
+					   from S5 for this long: give up. A
+					   coarse + fine scan with re-pings takes
+					   up to ~4 s, so keep well above that.  */
 
-LOCAL avoid_phase_t	g_av_phase;
-LOCAL UW		g_av_until_ms;	/* end of the current timed step */
-LOCAL UW		g_av_start_ms;	/* bypass start (OBS_BYPASS_LIMIT_MS) */
-LOCAL UW		g_av_seek_from_ms;	/* SEEK: ignore black before this */
-LOCAL UW		g_av_diag_ms;	/* time of one 45-degree leg */
-LOCAL H			g_av_dir;	/* +1 = bypass on the LEFT, -1 = RIGHT */
-LOCAL UW		g_obs_bad = 0U;	/* undecodable obstacle_q messages */
+LOCAL BOOL		g_av_settling;	/* OBSTACLE: stopped, waiting to report */
+LOCAL BOOL		g_av_moving;	/* a motion_q move is running */
+LOCAL BOOL		g_av_pausing;	/* move over, AV_GAP_MS before replying */
+LOCAL motor_mode_t	g_av_move;
+LOCAL UINT		g_av_reply;	/* reply to send after the pause */
+LOCAL UW		g_av_until_ms;	/* end of the move / settle / pause */
+LOCAL UW		g_av_heard_ms;	/* last message from S5 (watchdog) */
+LOCAL UW		g_av_bad = 0U;	/* undecodable messages */
 
 LOCAL const char * const k_obs_plan[] = { "STOP", "CONTINUE", "LEFT", "RIGHT",
 					  "REVERSE", "?", "?", "?" };
-
-/* Why S5 faulted: OBS_MSG_FAULT carries no cause, but S5 sets its fault
-   bit in flg_faults BEFORE it sends the message. */
-LOCAL const char *s5_fault_cause(void)
-{
-	T_RFLG		rflg;
-	const char	*p_cause = "unknown (no S5 fault bit set)";
-
-	if (tk_ref_flg(flg_faults, &rflg) != E_OK) {
-		p_cause = "unknown (flg_faults unreadable)";
-	} else if ((rflg.flgptn & FAULT_BIT_US_NO_ECHO) != 0U) {
-		p_cause = "ultrasonic NO ECHO / ECHO stuck / echo too short (see [S5 dbg])";
-	} else if ((rflg.flgptn & FAULT_BIT_US_TIMEOUT) != 0U) {
-		p_cause = "S2<->S5 handshake TIMEOUT (not the sensor)";
-	} else if ((rflg.flgptn & FAULT_BIT_NO_SAFE_RTE) != 0U) {
-		p_cause = "NO SAFE ROUTE (both sides blocked)";
-	} else {
-		/* keep "unknown" */
-	}
-	return p_cause;
-}
 
 LOCAL void av_reply(UINT bits)
 {
@@ -288,223 +249,197 @@ LOCAL BOOL av_time_up(void)
 	return ((W)(now_ms() - g_av_until_ms) >= 0) ? TRUE : FALSE;
 }
 
-LOCAL void av_drive(H left, H right, UW ms)
+/* Why S5 faulted: S5 sets its fault bit BEFORE it sends FAULT. */
+LOCAL const char *s5_fault_cause(void)
 {
-	motor_set(left, right);
-	g_av_until_ms = now_ms() + ms;
+	T_RFLG		rflg;
+	const char	*p_cause = "unknown";
+
+	if (tk_ref_flg(flg_faults, &rflg) == E_OK) {
+		if ((rflg.flgptn & FAULT_BIT_US_NO_ECHO) != 0U) {
+			p_cause = "ultrasonic no echo / stuck / too short";
+		} else if ((rflg.flgptn & FAULT_BIT_NO_SAFE_RTE) != 0U) {
+			p_cause = "no safe route (both sides blocked)";
+		} else if ((rflg.flgptn & FAULT_BIT_NO_LINE) != 0U) {
+			p_cause = "line not found after the bypass";
+		} else if ((rflg.flgptn & FAULT_BIT_US_TIMEOUT) != 0U) {
+			p_cause = "S2<->S5 handshake timeout";
+		} else {
+			/* keep "unknown" */
+		}
+	}
+	return p_cause;
 }
 
-/* Spin in place 45 deg (or for ms): toward = +1 left, -1 right.  Same
-   wheel signs as the barcode turns in maneuver_step(). */
-LOCAL void av_spin(H toward, UW ms)
-{
-	av_drive((H)(-toward * TURN_PWM), (H)(toward * TURN_PWM), ms);
-}
-
-LOCAL void av_forward(UW ms)
-{
-	av_drive(BASE_LEFT, BASE_RIGHT, ms);
-}
-
-/* Motors off now; MOTORS_STOPPED goes to S5 once the car has settled. */
-LOCAL void av_stop_then_report(void)
+/* Instant stop (OBSTACLE, CLEAR): drop any pending reply too. */
+LOCAL void av_halt(void)
 {
 	motor_set(0, 0);
-	g_av_phase    = AV_STOPPING;
-	g_av_until_ms = now_ms() + OBS_SETTLE_MS;
+	g_av_moving  = FALSE;
+	g_av_pausing = FALSE;
 }
 
-LOCAL void av_give_up(const char *why)
+/* Start one move: constant PWM for len_ms. */
+LOCAL void av_begin(H left, H right, UW len_ms)
 {
-	car_stop(ROBOT_ERROR);
-	tm_printf((UB *)"[obs] %s - stopped. Send start / press GP20 to go again.\n", why);
+	g_av_moving  = TRUE;
+	g_av_pausing = FALSE;
+	g_av_until_ms = now_ms() + len_ms;
+	motor_set(left, right);
 }
 
-LOCAL void av_begin_bypass(H dir, UB sidestep_cm)
+/* End of a move: stop, stay still AV_GAP_MS, then reply. */
+LOCAL void av_finish(UINT reply)
 {
-	UW const side = (sidestep_cm == OBS_SIDESTEP_NONE) ? OBS_DEFAULT_SIDE_CM
-							      : (UW)sidestep_cm;
-
-	g_av_dir      = dir;
-	g_av_diag_ms  = (side * OBS_ROOT2_X100 * OBS_MS_PER_CM) / 100U;
-	g_av_start_ms = now_ms();
-	g_av_phase    = AV_TURN_OUT;
-	av_spin(dir, OBS_TURN_45_MS);
-	s1_post_state(ROBOT_AVOIDING);
-	tm_printf((UB *)"[obs] bypass %s, sidestep %u cm (leg %u ms)\n",
-		  (dir > 0) ? "LEFT" : "RIGHT", (UINT)side, (UINT)g_av_diag_ms);
+	motor_set(0, 0);
+	g_av_moving   = FALSE;
+	g_av_pausing  = TRUE;
+	g_av_reply    = reply;
+	g_av_until_ms = now_ms() + AV_GAP_MS;
 }
 
-/* One message from obstacle_q. */
+/* One obstacle_q message. */
 LOCAL void on_obstacle(obstacle_msg_t const *p)
 {
-	BOOL const avoiding = (g_mode == CAR_AVOID) ? TRUE : FALSE;
+	g_av_heard_ms = now_ms();
 
 	switch (p->type) {
 	case OBS_MSG_OBSTACLE:
-		if ((g_mode == CAR_FOLLOW) || (g_mode == CAR_MANEUVER) || avoiding) {
-			g_mode = CAR_AVOID;		/* cancels a barcode turn */
-			av_stop_then_report();
-			s1_post_state(ROBOT_OBSTACLE_SCAN);
-			tm_printf((UB *)"[obs] OBSTACLE at %u cm - stopping\n", (UINT)p->closest_cm);
-		} else {
-			av_reply(AVOID_EVT_MOTORS_STOPPED);	/* idle: already stopped */
+		if (g_mode == CAR_IDLE) {
+			av_reply(AVOID_EVT_MOTORS_STOPPED);	/* already still */
 			tm_printf((UB *)"[obs] obstacle at %u cm (car idle)\n", (UINT)p->closest_cm);
+			break;
 		}
+		/* Following, turning at a junction, or already avoiding
+		   (something new ahead mid-bypass): stop now, S5 takes over. */
+		g_mode        = CAR_AVOID;
+		av_halt();
+		g_av_settling = TRUE;
+		g_av_until_ms = now_ms() + AV_SETTLE_MS;
+		s1_post_state(ROBOT_OBSTACLE_SCAN);
+		tm_printf((UB *)"[obs] OBSTACLE at %u cm - stopping\n", (UINT)p->closest_cm);
 		break;
 
 	case OBS_MSG_PLAN:
 		tm_printf((UB *)"[obs] plan %s: closest=%u width=%u L=%u R=%u side=%u\n",
 			  k_obs_plan[p->plan & 7U], (UINT)p->closest_cm, (UINT)p->width_cm,
 			  (UINT)p->left_clear_cm, (UINT)p->right_clear_cm, (UINT)p->sidestep_cm);
-		if (!avoiding || (g_av_phase != AV_WAIT_PLAN)) {
-			/* Not driving: move nothing, just let S5 carry on. */
-			if ((p->plan == OBS_PLAN_LEFT) || (p->plan == OBS_PLAN_RIGHT)) {
-				av_reply(AVOID_EVT_LINE_REACQUIRED);
-			} else if (p->plan == OBS_PLAN_REVERSE) {
-				av_reply(AVOID_EVT_MOTORS_STOPPED);
-			} else {
-				/* STOP: FAULT follows */
-			}
-			break;
-		}
-		switch (p->plan) {
-		case OBS_PLAN_LEFT:
-			av_begin_bypass(1, p->sidestep_cm);
-			break;
-		case OBS_PLAN_RIGHT:
-			av_begin_bypass(-1, p->sidestep_cm);
-			break;
-		case OBS_PLAN_REVERSE:
-			g_av_phase = AV_REVERSE;
-			av_drive((H)-BASE_LEFT, (H)-BASE_RIGHT, OBS_REVERSE_CM * OBS_MS_PER_CM);
-			tm_printf((UB *)"[obs] reversing %u cm, then S5 rescans\n", (UINT)OBS_REVERSE_CM);
-			break;
-		case OBS_PLAN_CONTINUE:
-			car_resume_follow();
-			break;
-		case OBS_PLAN_STOP:
-		default:
-			av_give_up("no safe route around the obstacle");
-			break;
-		}
 		break;
 
 	case OBS_MSG_CLEAR:
-		if (avoiding && (g_av_phase == AV_WAIT_PLAN)) {
-			tm_printf((UB *)"[obs] path clear - resuming line following\n");
-			car_resume_follow();
+		if (g_mode == CAR_AVOID) {
+			av_halt();
+			g_av_settling = FALSE;
+			s3_request_line_reset();
+			g_hold_until_ms = 0U;
+			g_mode = CAR_FOLLOW;
+			s1_post_state(ROBOT_LINE_FOLLOW);
+			tm_printf((UB *)"[obs] S5 done - line following\n");
 		}
 		break;
 
 	case OBS_MSG_FAULT:
 	default:
 		if (g_mode != CAR_IDLE) {
-			av_give_up("obstacle subsystem (S5) FAULT");
+			car_stop(ROBOT_ERROR);
 		}
-		tm_printf((UB *)"[obs] S5 FAULT, cause: %s. START / GP20 clears it.\n",
+		tm_printf((UB *)"[obs] S5 FAULT: %s - stopped. START / GP20 clears it.\n",
 			  s5_fault_cause());
 		break;
 	}
 }
 
-/* Advance the timed steps.  Called every pass (line message or timeout). */
+/* One motion_q request from S5. */
+LOCAL void on_motion(motor_cmd_msg_t m)
+{
+	motor_mode_t const	mode  = motor_cmd_get_mode(m);
+	UW const		param = (UW)(UB)motor_cmd_get_param(m);	/* 0..255 */
+
+	g_av_heard_ms = now_ms();
+
+	if (g_mode != CAR_AVOID) {
+		/* Not avoiding (idle bench test): move nothing, answer now. */
+		av_reply((mode == MCMD_FWD_TO_LINE) ? AVOID_EVT_LINE_FOUND : AVOID_EVT_MOVE_DONE);
+		return;
+	}
+
+	g_av_move = mode;
+	switch (mode) {
+	case MCMD_FWD_DIST:
+	case MCMD_FWD_TO_LINE:
+		av_begin(AV_DRIVE_PWM, AV_DRIVE_PWM, param * AV_MS_PER_CM);
+		s1_post_state((mode == MCMD_FWD_TO_LINE) ? ROBOT_LINE_RECOVERY : ROBOT_AVOIDING);
+		break;
+	case MCMD_BWD_DIST:
+		av_begin((H)-AV_DRIVE_PWM, (H)-AV_DRIVE_PWM, param * AV_MS_PER_CM);
+		break;
+	case MCMD_TURN_LEFT:		/* same wheel signs as maneuver_step() */
+		av_begin((H)-AV_TURN_PWM, AV_TURN_PWM, param * AV_MS_PER_DEG);
+		s1_post_state(ROBOT_AVOIDING);
+		break;
+	case MCMD_TURN_RIGHT:
+		av_begin(AV_TURN_PWM, (H)-AV_TURN_PWM, param * AV_MS_PER_DEG);
+		s1_post_state(ROBOT_AVOIDING);
+		break;
+	case MCMD_STOP:
+	default:			/* LINE_STEER / U_TURN: not used by S5 */
+		av_halt();
+		av_reply(AVOID_EVT_MOVE_DONE);
+		break;
+	}
+}
+
+/* Advance the running move / pause / settle. Called every pass. */
 LOCAL void avoid_step(void)
 {
 	if (g_mode != CAR_AVOID) {
 		return;
 	}
-	if ((g_av_phase >= AV_TURN_OUT) &&
-	    ((now_ms() - g_av_start_ms) > OBS_BYPASS_LIMIT_MS)) {
-		av_give_up("bypass took too long");
-		return;
-	}
-
-	switch (g_av_phase) {
-	case AV_STOPPING:
+	if (g_av_settling) {
 		if (av_time_up()) {
+			g_av_settling = FALSE;
+			g_av_heard_ms = now_ms();
 			av_reply(AVOID_EVT_MOTORS_STOPPED);
-			g_av_phase    = AV_WAIT_PLAN;
-			g_av_until_ms = now_ms() + OBS_WAIT_PLAN_MS;
 		}
-		break;
-	case AV_WAIT_PLAN:
-		if (av_time_up()) {
-			av_give_up("no plan from the obstacle sensor");
-		}
-		break;
-	case AV_REVERSE:
-		if (av_time_up()) {
-			av_stop_then_report();
-		}
-		break;
-	case AV_TURN_OUT:
-		if (av_time_up()) {
-			g_av_phase = AV_OUT;
-			av_forward(g_av_diag_ms);
-		}
-		break;
-	case AV_OUT:
-		if (av_time_up()) {
-			g_av_phase = AV_STRAIGHT;
-			av_spin((H)-g_av_dir, OBS_TURN_45_MS);
-		}
-		break;
-	case AV_STRAIGHT:
-		if (av_time_up()) {
-			g_av_phase = AV_PASS;
-			av_forward(OBS_PASS_CM * OBS_MS_PER_CM);
-		}
-		break;
-	case AV_PASS:
-		if (av_time_up()) {
-			g_av_phase = AV_TURN_IN;
-			av_spin((H)-g_av_dir, OBS_TURN_45_MS);
-		}
-		break;
-	case AV_TURN_IN:
-		if (av_time_up()) {
-			g_av_phase        = AV_SEEK;
-			g_av_seek_from_ms = now_ms() + (g_av_diag_ms / 2U);
-			av_forward(g_av_diag_ms * OBS_SEEK_FACTOR);
-			s1_post_state(ROBOT_LINE_RECOVERY);
-		}
-		break;
-	case AV_SEEK:
-		if ((g_lb || g_rb) && ((W)(now_ms() - g_av_seek_from_ms) >= 0)) {
-			g_av_phase = AV_ALIGN;
-			av_spin(g_av_dir, OBS_TURN_45_MS);
-			tm_printf((UB *)"[obs] line found - aligning\n");
+	} else if (g_av_moving) {
+		if ((g_av_move == MCMD_FWD_TO_LINE) && (g_lb || g_rb)) {
+			av_finish(AVOID_EVT_LINE_FOUND);
 		} else if (av_time_up()) {
-			av_give_up("line not found after the bypass");
+			av_finish(AVOID_EVT_MOVE_DONE);
 		} else {
-			/* keep looking */
+			/* still moving */
 		}
-		break;
-	case AV_ALIGN:
-	default:
+	} else if (g_av_pausing) {
 		if (av_time_up()) {
-			av_reply(AVOID_EVT_LINE_REACQUIRED);
-			tm_printf((UB *)"[obs] bypass done (%u ms) - line following\n",
-				  (UINT)(now_ms() - g_av_start_ms));
-			car_resume_follow();
+			g_av_pausing  = FALSE;
+			g_av_heard_ms = now_ms();
+			av_reply(g_av_reply);
 		}
-		break;
+	} else if ((now_ms() - g_av_heard_ms) > AV_IDLE_LIMIT_MS) {
+		car_stop(ROBOT_ERROR);		/* sends ABORT to S5 */
+		tm_printf((UB *)"[obs] no word from S5 for %u ms - stopped\n",
+			  (UINT)AV_IDLE_LIMIT_MS);
+	} else {
+		/* waiting for S5's next move */
 	}
 }
 
-/* Drain obstacle_q.  Never blocks. */
+/* Drain obstacle_q and motion_q. Never blocks. */
 LOCAL void poll_obstacles(void)
 {
 	UB		buf[OBSTACLE_MSG_SIZE];
 	obstacle_msg_t	msg;
+	motor_cmd_msg_t	mv;
 
 	while (tk_rcv_mbf(mbf_obstacle, buf, TMO_POL) == (INT)OBSTACLE_MSG_SIZE) {
 		if (obstacle_msg_unpack(buf, &msg)) {
 			on_obstacle(&msg);
 		} else {
-			g_obs_bad++;
+			g_av_bad++;
 		}
+	}
+	while (tk_rcv_mbf(mbf_motion, &mv, TMO_POL) == (INT)sizeof(mv)) {
+		on_motion(mv);
 	}
 }
 #endif /* APP_WITH_S5 */
@@ -683,10 +618,6 @@ LOCAL void on_line(line_err_t le)
 #endif
 	} else if (g_mode == CAR_MANEUVER) {
 		maneuver_step();
-#if APP_WITH_S5
-	} else if (g_mode == CAR_AVOID) {
-		avoid_step();		/* uses g_lb / g_rb set above */
-#endif
 	} else {
 		/* idle */
 	}
@@ -729,9 +660,6 @@ EXPORT void mission_task(INT stacd, void *exinf)
 			on_command(cmd);
 		}
 		button_poll(t);
-#if APP_WITH_S5
-		poll_obstacles();	/* before the line: a stop wins over steering */
-#endif
 
 		if (n == (INT)sizeof(msg)) {
 			/* after START the line task resets its state; drop messages
@@ -742,10 +670,6 @@ EXPORT void mission_task(INT stacd, void *exinf)
 			}
 		} else if (g_mode == CAR_MANEUVER) {
 			maneuver_step();	/* no line data: keep the timing */
-#if APP_WITH_S5
-		} else if (g_mode == CAR_AVOID) {
-			avoid_step();		/* no line data: keep the timing */
-#endif
 		} else {
 			/* nothing this pass */
 		}
@@ -753,6 +677,10 @@ EXPORT void mission_task(INT stacd, void *exinf)
 		while (tk_rcv_mbf(mbf_barcode, &b, TMO_POL) == (INT)sizeof(b)) {
 			on_barcode(b);
 		}
+#if APP_WITH_S5
+		poll_obstacles();
+		avoid_step();
+#endif
 
 		/* status line, 2 Hz (none before READY, like integrated_car) */
 		if (((W)(t - next_print_ms) >= 0) && s3_is_calibrated()) {

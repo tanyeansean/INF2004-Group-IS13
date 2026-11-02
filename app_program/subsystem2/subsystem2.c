@@ -9,7 +9,8 @@ EXPORT ID	mbf_line_err;	/* IF-01, owned by S2 (the receiver) */
 EXPORT ID	mbf_barcode;	/* IF-02 */
 EXPORT ID	mbf_cmd;	/* IF-04 */
 EXPORT ID	mbf_motor;	/* Mission Control -> Motor Control (private) */
-EXPORT ID	mbf_obstacle;	/* IF-06, owned by S2 (the receiver) */
+EXPORT ID	mbf_obstacle;	/* IF-09, S5 -> S2, owned here (the receiver) */
+EXPORT ID	mbf_motion;	/* IF-10, S5 -> S2, owned here (the receiver) */
 EXPORT ID	flg_faults;	/* shared fault flag, cleared only by S2 */
 
 /* Defined here, set up before any task starts; written only by Telemetry
@@ -21,6 +22,7 @@ EXPORT nav_map_t	g_nav_map;
 #define S2_CMD_MSGS	(4U)
 #define S2_MOTOR_MSGS	(4U)
 #define S2_OBST_MSGS	(4U)	/* S5 sends at most ~2 per scan */
+#define S2_MOTION_MSGS	(2U)	/* S5 waits for each move before the next */
 
 LOCAL ID make_mbf(UW msg_size, UW msgs)
 {
@@ -56,6 +58,10 @@ EXPORT ER subsystem2_init(void)
 	mbf_obstacle = make_mbf(OBSTACLE_MSG_SIZE, S2_OBST_MSGS);
 	if (mbf_obstacle < E_OK) {
 		return mbf_obstacle;
+	}
+	mbf_motion = make_mbf(sizeof(motor_cmd_msg_t), S2_MOTION_MSGS);
+	if (mbf_motion < E_OK) {
+		return mbf_motion;
 	}
 	{
 		T_CFLG cflg = {0};

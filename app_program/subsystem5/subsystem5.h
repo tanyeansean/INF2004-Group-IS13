@@ -1,11 +1,13 @@
 /*
  *	subsystem5.h
  *	Subsystem 5 -- Obstacle Avoid: ultrasonic + servo scanning, obstacle
- *	profiling, avoidance planning. Student ID: 2500177 (Joe Teo Wei Xuan).
+ *	profiling, avoidance planning, the bypass and line recovery.
+ *	Student ID: 2500177 (Joe Teo Wei Xuan).
  *
  *	Public interface: only what OTHER subsystems may use.
- *	Sensing only: S5 never drives the motors. It reports on obstacle_q and
- *	Mission Control (S2) steers, then answers through flg_avoid.
+ *	S5 never touches the motor PWM (motor_task owns it, TEAM.md section 3).
+ *	It decides every move of the bypass and line recovery and asks Mission
+ *	Control (S2) to carry each one out on motion_q, one at a time.
  */
 
 #ifndef SUBSYSTEM5_H
@@ -20,18 +22,19 @@
 #define S5_PRI_BENCH		21	/* stand-in Mission Control, bench only */
 
 /* ---------------------------------------------------------------------
- *  S5 -> S2: obstacle_q. Owned by the RECEIVER (S2, Mission Control),
- *  per the template rule; see s5_links.h for how S5 finds it.
- *  Each message is exactly OBSTACLE_MSG_SIZE bytes (obstacle_msg.h).
+ *  S5 -> S2: obstacle_q (IF-09) and motion_q (IF-10). Both owned by the
+ *  RECEIVER (S2); see s5_links.h for how S5 finds them.
  *
  *  S2 -> S5: flg_avoid. Owned by S5 (the receiver). Mission Control
  *  sets these bits with tk_set_flg(); S5 waits on and clears them.
  * --------------------------------------------------------------------- */
 IMPORT ID	flg_avoid;
 
-#define AVOID_EVT_MOTORS_STOPPED	(1U << 0)	/* car stationary (after stop
-							   or a finished reverse)   */
-#define AVOID_EVT_LINE_REACQUIRED	(1U << 1)	/* line found after bypass  */
+#define AVOID_EVT_MOTORS_STOPPED	(1U << 0)	/* after OBSTACLE: car has
+							   stopped and settled; S5
+							   now has the wheels       */
+#define AVOID_EVT_MOVE_DONE		(1U << 1)	/* a motion_q move finished
+							   (or STOP took effect)    */
 #define AVOID_EVT_RESUME		(1U << 2)	/* fault cleared, resume    */
 #define AVOID_EVT_MC_READY		(1U << 3)	/* Mission Control is now
 							   draining obstacle_q: S5
@@ -40,17 +43,20 @@ IMPORT ID	flg_avoid;
 							   the car mid-avoid (STOP,
 							   GP20, give-up): S5 goes
 							   back to MONITOR, no fault */
+#define AVOID_EVT_LINE_FOUND		(1U << 5)	/* MCMD_FWD_TO_LINE ended
+							   because a front IR sensor
+							   saw the line             */
 
 /* S5 states, 3 bits (also byte 0 bits 5-7 of every obstacle_q message). */
 typedef enum
 {
 	S5_STATE_MONITOR = 0,	/* ping straight ahead every 60 ms   */
-	S5_STATE_WAIT_STOP,	/* asked to stop/reverse, waiting    */
+	S5_STATE_WAIT_STOP,	/* asked Mission Control to stop     */
 	S5_STATE_COARSE_SCAN,	/* 6 angles, 65-115 deg (10 deg steps) */
 	S5_STATE_FINE_SCAN,	/* 5 deg steps around the hits       */
 	S5_STATE_PROFILE,	/* closest point, width, clearances  */
 	S5_STATE_PLAN,		/* LEFT/RIGHT/REVERSE/STOP/CONTINUE  */
-	S5_STATE_BYPASS,	/* watch ahead, wait LINE_REACQUIRED */
+	S5_STATE_BYPASS,	/* drive around it, then find the line */
 	S5_STATE_FAULT		/* latched until AVOID_EVT_RESUME    */
 } s5_state_t;
 
