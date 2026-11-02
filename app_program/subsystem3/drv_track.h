@@ -36,6 +36,7 @@ IMPORT UW	drv_track_barcode_level(void);
 #define S3_BAR_SRC_IRQ		(0U)
 #define S3_BAR_SRC_SAMPLER	(1U)
 IMPORT volatile UW	s3_bar_src;
+IMPORT volatile UW	s3_bar_raw_changes;	/* GP7 changed at all (pre-debounce) */
 IMPORT volatile UW	s3_bar_isr_count;
 IMPORT volatile UW	s3_bar_samp_changes;
 IMPORT volatile UW	s3_bar_pushed;

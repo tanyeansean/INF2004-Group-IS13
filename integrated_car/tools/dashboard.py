@@ -48,6 +48,7 @@ state = {                       # latest of everything, sent to a new tab
     "broker": f"{args.broker}:{args.port}", "root": args.root, "mqtt": False,
     "status": None, "live": None, "odom": None, "heartbeat": None,
     "broker_map": None, "car_map": None, "summary": None, "summary_check": None,
+    "barcode": None, "barcode_seen": 0, "barcode_unreadable": 0,
     "ack": None, "map_ack": None, "lost": 0,
 }
 last_live_seq = None
@@ -215,6 +216,15 @@ def on_message(client, userdata, msg):
                                 "fields": {k: (round(v, 1) if isinstance(v, float) else int(v))
                                            for k, v in s.items()}}
             push("summary", state["summary"])
+        elif sub == "event/barcode":
+            letter, move = bm.decode_letter_move(payload)
+            state["barcode_seen"] += 1
+            if letter is None:
+                state["barcode_unreadable"] += 1
+            state["barcode"] = {"letter": letter, "move": move, "text": text,
+                                "seen": state["barcode_seen"],
+                                "unreadable": state["barcode_unreadable"]}
+            push("barcode", state["barcode"])
         elif sub.startswith("event/"):
             push("event", {"topic": sub, "text": text})
         elif sub == "cmd":

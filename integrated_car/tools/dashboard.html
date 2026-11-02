@@ -127,6 +127,7 @@
     <div class="tile"><div class="k">Turn rate</div><div class="v" id="yaw">-<span class="u">°/s</span></div></div>
     <div class="tile"><div class="k">Motion</div><div class="v" id="motion" style="font-size:16px">-</div></div>
     <div class="tile"><div class="k">Highest hump</div><div class="v" id="peak">-<span class="u">cm</span></div></div>
+    <div class="tile"><div class="k">Last barcode</div><div class="v" id="bar" style="font-size:16px">-</div></div>
   </div>
   <div class="row" style="margin-top:10px; gap:24px">
     <div>
@@ -219,6 +220,17 @@ function showHb(h) {
   $('up').textContent = `up ${h.uptime} s, reconnects ${h.reconnects}, drops cmd ${h.cmd_drop} / ev ${h.ev_drop}`;
   $('cmap').textContent = h.car_map || '-';
 }
+function showBarcode(b) {
+  const el = $('bar');
+  if (b.letter) {
+    el.textContent = b.letter + ' → ' + b.move;
+    el.style.color = '';
+  } else {
+    el.textContent = 'unreadable (' + b.unreadable + ')';
+    el.style.color = 'var(--warn)';
+  }
+  addLog('ev', 'barcode: ' + b.text);
+}
 function showSummary(s) {
   const f = s.fields;
   const items = [
@@ -248,6 +260,7 @@ function apply(kind, d) {
     if (d.ack) $('ack').textContent = d.ack;
     if (d.map_ack) $('mack').textContent = d.map_ack;
     if (d.summary) showSummary(d.summary);
+    if (d.barcode) showBarcode(d.barcode);
   } else if (kind === 'mqtt') {
     $('mqtt').className = 'pill ' + (d.connected ? 'ok' : 'bad');
     $('mqtt').textContent = d.connected ? 'broker: connected' : 'broker: not connected';
@@ -262,6 +275,7 @@ function apply(kind, d) {
   else if (kind === 'map_ack') { $('mack').textContent = d.text; addLog('ack', 'map ack: ' + d.text); }
   else if (kind === 'ack') { $('ack').textContent = d.text; addLog('ack', 'ack: ' + d.text); }
   else if (kind === 'summary') { showSummary(d); addLog('ev', 'run summary: ' + d.text + ' | ' + d.check); }
+  else if (kind === 'barcode') showBarcode(d);
   else if (kind === 'event') addLog('ev', d.topic + ': ' + d.text);
   else if (kind === 'sent') addLog('', d.text);
 }

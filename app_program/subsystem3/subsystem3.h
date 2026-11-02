@@ -30,8 +30,11 @@
 
 /* Barcode edge-source counters for the status line: src 'I' = GPIO
    interrupt, 'S' = 0.5 ms sampler; GP7 interrupts taken; level changes
-   seen by the sampler; edges given to the decoder. */
-IMPORT void	s3_barcode_diag(UB *p_src, UW *p_isr, UW *p_samp, UW *p_pushed);
+   seen by the sampler; edges given to the decoder; and raw GP7 changes
+   counted BEFORE the sampler debounce.  raw > samp means the debounce
+   is rejecting bars (they are shorter than S3_SAMPLE_STABLE samples). */
+IMPORT void	s3_barcode_diag(UB *p_src, UW *p_isr, UW *p_samp, UW *p_pushed,
+				UW *p_raw);
 
 /* 1 once the front sensors are calibrated (READY).  Written only by the
    line task, one aligned word: safe to read from any task or core. */

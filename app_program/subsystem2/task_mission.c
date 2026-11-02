@@ -758,21 +758,22 @@ EXPORT void mission_task(INT stacd, void *exinf)
 		if (((W)(t - next_print_ms) >= 0) && s3_is_calibrated()) {
 			UB pend = 0U;
 			UB bsrc = 0U;
-			UW bisr = 0U, bsamp = 0U, bpush = 0U;
+			UW bisr = 0U, bsamp = 0U, bpush = 0U, braw = 0U;
 			next_print_ms += S2_STATUS_MS;
 			if ((W)(t - next_print_ms) >= 0) {
 				next_print_ms = t + S2_STATUS_MS;	/* after calibration */
 			}
-			s3_barcode_diag(&bsrc, &bisr, &bsamp, &bpush);
+			s3_barcode_diag(&bsrc, &bisr, &bsamp, &bpush, &braw);
 			tm_printf((UB *)"mode=%u L=%c R=%c err=%4d jn=%u lost=%u pending=%c pwm=%d/%d link=%s"
-				  " bar=%c irq%u smp%u q%u\n",
+				  " bar=%c irq%u smp%u q%u raw%u\n",
 				  (UINT)g_mode, g_lb ? 'B' : 'W', g_rb ? 'B' : 'W',
 				  line_err_get_error(le), (UINT)line_err_get_junction(le),
 				  (UINT)line_err_get_lost(le),
 				  nav_has_pending(&g_nav, &pend) ? (char)('A' + pend) : '-',
 				  (g_mode == CAR_FOLLOW) ? g_out_l : 0,
 				  (g_mode == CAR_FOLLOW) ? g_out_r : 0,
-				  s1_link_name(), (char)bsrc, (UINT)bisr, (UINT)bsamp, (UINT)bpush);
+				  s1_link_name(), (char)bsrc, (UINT)bisr, (UINT)bsamp, (UINT)bpush,
+				  (UINT)braw);
 		}
 		(void)tk_set_flg(flg_hb, HB_MISSION_CONTROL);
 	}

@@ -144,6 +144,7 @@ EXPORT UH drv_track_read_right(void) { return adc_read(S3_ADC_CH_RIGHT); }
 #define S3_SAMPLE_STABLE	(2U)	/* samples a new level must hold */
 
 EXPORT volatile UW	s3_bar_src = S3_BAR_SRC_SAMPLER;
+EXPORT volatile UW	s3_bar_raw_changes = 0U;	/* GP7 changed at all (before debounce) */
 EXPORT volatile UW	s3_bar_isr_count = 0U;	/* GP7 interrupts taken */
 EXPORT volatile UW	s3_bar_samp_changes = 0U;	/* level changes seen by the sampler */
 EXPORT volatile UW	s3_bar_pushed = 0U;	/* edges put in the queue */
@@ -152,6 +153,7 @@ EXPORT ER		s3_bar_samp_er = E_OK;	/* sampler set-up result */
 
 LOCAL volatile UW	s_q_level;	/* GP7 level after the last pushed edge */
 LOCAL volatile UW	s_samp_level;	/* GP7 level at the last sample */
+LOCAL volatile UW	s_raw_level;	/* GP7 level of the previous raw sample */
 
 LOCAL UW gp7_level(void)
 {
@@ -194,6 +196,14 @@ LOCAL void gpio_bank0_inthdr(UINT intno)
 		return;
 	}
 	s3_bar_isr_count++;
+	/* Raw activity: count the edge bits the bank reported, before any
+	   filtering, so "pin never moved" and "filter ate it" stay distinct. */
+	{
+		UW const e = ev & S3_EVT_EDGES;
+
+		if ((e & S3_EVT_EDGE_LOW)  != 0U) { s3_bar_raw_changes++; }
+		if ((e & S3_EVT_EDGE_HIGH) != 0U) { s3_bar_raw_changes++; }
+	}
 	if (s3_bar_src == S3_BAR_SRC_IRQ) {
 		push_if_changed(gp7_level(), now);
 	}
@@ -214,6 +224,13 @@ LOCAL void timer3_inthdr(UINT intno)
 	   a row; its timestamp is the FIRST of them, so widths stay exact to
 	   one sample.  Comparator bounce (us) and flicker < 0.5 ms vanish. */
 	level = gp7_level();
+	/* Raw activity, counted before the debounce filter below: if this
+	   rises while s3_bar_samp_changes does not, the bars are shorter
+	   than S3_SAMPLE_STABLE samples and the filter is eating them. */
+	if (level != s_raw_level) {
+		s_raw_level = level;
+		s3_bar_raw_changes++;
+	}
 	if (level == s_samp_level) {
 		cand_n = 0U;
 		return;
@@ -290,6 +307,7 @@ EXPORT ER drv_track_barcode_irq_init(void)
 
 	s_q_level    = gp7_level();
 	s_samp_level = s_q_level;
+	s_raw_level  = s_q_level;
 
 	s3_bar_samp_er = sampler_init();
 	s3_bar_irq_er  = gpio_irq_init(core);
@@ -311,8 +329,9 @@ EXPORT void drv_track_barcode_use_sampler(void)
 	out_w(S3_IO_PROC_INTE(core, S3_PIN_BARCODE) + REG_ALIAS_CLR,
 	      S3_EVT_EDGES << S3_IO_SHIFT(S3_PIN_BARCODE));
 	DI(imask);
-	s_q_level  = gp7_level();
-	s3_bar_src = S3_BAR_SRC_SAMPLER;
+	s_q_level   = gp7_level();
+	s_raw_level = s_q_level;
+	s3_bar_src  = S3_BAR_SRC_SAMPLER;
 	EI(imask);
 }
 
