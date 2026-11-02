@@ -28,8 +28,10 @@
 #include "lwip/apps/mqtt.h"
 #include "lwip/ip_addr.h"
 #include "lwip/timeouts.h"
+#include "lwip/sys.h"		/* sys_now() */
 #include "wifi_secrets.h"
 #include "mqtt_utk.h"
+#include "../../../libwifi/sysdepend/pico_rp2040/cyw43_utk.h"	/* MAC, for the client ID */
 #include <tm/tmonitor.h>
 
 #define MQTT_UTK_HEARTBEAT_MS   5000
@@ -64,7 +66,17 @@ extern void app_mqtt_publish_failed(void) __attribute__((weak));
 
 static mqtt_client_t	*client;
 static ip_addr_t	broker_addr;
+static char		client_id[40];	/* MQTT_CLIENT_ID + "-" + MAC suffix */
+
+/* 1 from the moment a connect is started until the next retry is due.
+ * While it is set, the 2 ms poll loop in cyw43_utk.c leaves the client alone,
+ * so a lost connection is retried once every MQTT_UTK_RETRY_MS, not on every
+ * poll (which made lwIP answer "already connecting" and printed a console
+ * line every 2 ms). Cleared when connected, when a working connection drops
+ * (reconnect at once), or when the retry is due. */
 static u8_t		connecting;
+static u8_t		is_up;		/* 1 between ACCEPTED and the next drop */
+static u32_t		up_since;	/* sys_now() at ACCEPTED */
 
 static char		rx_topic[MQTT_UTK_RX_TOPIC_MAX];
 static UB		rx_data[MQTT_UTK_RX_DATA_MAX];
@@ -219,11 +231,51 @@ static void pump_timeout(void *arg)
 	sys_timeout(MQTT_UTK_PUMP_MS, pump_timeout, NULL);
 }
 
+/* The retry is due: let the poll loop in cyw43_utk.c reconnect. It calls
+ * mqtt_utk_start() within 2 ms, and only while the WiFi link is up. */
 static void retry_timeout(void *arg)
 {
 	(void)arg;
 	connecting = 0;
-	mqtt_utk_start();
+}
+
+/* Exactly one retry timer at a time. lwIP has only a few spare timer slots
+ * (MEMP_NUM_SYS_TIMEOUT in lwipopts.h), and with NDEBUG a full pool drops a
+ * new timer silently, which could stop the publish pump or the keepalive. */
+static void schedule_retry(void)
+{
+	connecting = 1;
+	sys_untimeout(retry_timeout, NULL);
+	sys_timeout(MQTT_UTK_RETRY_MS, retry_timeout, NULL);
+}
+
+/* Client ID = MQTT_CLIENT_ID + "-" + the last 3 bytes of this board's MAC.
+ * A broker drops the older of two connections that use the same ID, so two
+ * boards built with the same wifi_secrets.h (the template default is
+ * "mtk3smp-pico") would keep throwing each other off: offline/online every
+ * few seconds. The MAC suffix keeps every board's ID different. */
+static const char *make_client_id(void)
+{
+	static const char	hex[] = "0123456789abcdef";
+	T_CYW43_UTK_STATUS	st;
+	const char		*p = MQTT_CLIENT_ID;
+	unsigned int		at = 0;
+	unsigned int		i;
+
+	if(client_id[0] != '\0') {
+		return client_id;
+	}
+	cyw43_utk_get_status(&st);	/* MAC is read before the link comes up */
+	while((*p != '\0') && (at < (sizeof(client_id) - 8u))) {
+		client_id[at++] = *p++;
+	}
+	client_id[at++] = '-';
+	for(i = 3u; i < 6u; i++) {
+		client_id[at++] = hex[(st.mac[i] >> 4) & 0x0fu];
+		client_id[at++] = hex[st.mac[i] & 0x0fu];
+	}
+	client_id[at] = '\0';
+	return client_id;
 }
 
 static void connection_cb(mqtt_client_t *c, void *arg, mqtt_connection_status_t status)
@@ -239,8 +291,11 @@ static void connection_cb(mqtt_client_t *c, void *arg, mqtt_connection_status_t 
 		 * is allowed to reconnect. Leaving it set would wedge the client
 		 * permanently after the first disconnect. */
 		connecting = 0;
+		is_up = 1;
+		up_since = sys_now();
+		sys_untimeout(retry_timeout, NULL);
 
-		tm_printf((UB*)"mqtt: connected to " MQTT_BROKER_IP "\n");
+		tm_printf((UB*)"mqtt: connected to " MQTT_BROKER_IP " as %s\n", client_id);
 
 		/* Callbacks must be registered before subscribing, or the first
 		 * delivery has nowhere to go. */
@@ -285,15 +340,28 @@ static void connection_cb(mqtt_client_t *c, void *arg, mqtt_connection_status_t 
 		sys_untimeout(heartbeat_timeout, NULL);
 		sys_timeout(MQTT_UTK_HEARTBEAT_MS, heartbeat_timeout, NULL);
 	} else {
-		/* mqtt_client_connect() reconnects on its own for a dropped
-		 * keepalive; a rejected/never-established connection does not
-		 * retry itself, so do that here -- on a delay, so a broker
-		 * that keeps rejecting (e.g. bad client ID) can't turn this
-		 * into a tight reconnect loop. */
+		/* Every lost or refused connection lands here: lwIP's MQTT client
+		 * never reconnects by itself (a missed keepalive arrives as
+		 * MQTT_CONNECT_TIMEOUT). A connection that had been working is
+		 * retried at once; anything else waits MQTT_UTK_RETRY_MS, so a
+		 * broker that keeps rejecting (e.g. bad client ID) or cannot be
+		 * reached can't turn this into a tight loop. */
 		if(APP_MODE() && app_mqtt_link != NULL) app_mqtt_link(0);
-		tm_printf((UB*)"mqtt: connection status %d, retrying in %ds\n",
-			  (int)status, MQTT_UTK_RETRY_MS / 1000);
-		sys_timeout(MQTT_UTK_RETRY_MS, retry_timeout, NULL);
+		if(is_up && ((u32_t)(sys_now() - up_since) >= MQTT_UTK_RETRY_MS)) {
+			/* A connection that had been working dropped: reconnect on
+			 * the next poll (as before). If that attempt fails, it lands
+			 * in the branch below and is paced. */
+			is_up = 0;
+			connecting = 0;
+			sys_untimeout(retry_timeout, NULL);
+			tm_printf((UB*)"mqtt: connection lost (status %d), reconnecting\n",
+				  (int)status);
+		} else {
+			is_up = 0;
+			tm_printf((UB*)"mqtt: connection status %d, retrying in %ds\n",
+				  (int)status, MQTT_UTK_RETRY_MS / 1000);
+			schedule_retry();
+		}
 	}
 }
 
@@ -310,17 +378,19 @@ void mqtt_utk_start(void)
 		client = mqtt_client_new();
 		if(client == NULL) {
 			tm_printf((UB*)"mqtt: mqtt_client_new() failed\n");
+			schedule_retry();
 			return;
 		}
 	}
 
 	if(!ip4addr_aton(MQTT_BROKER_IP, ip_2_ip4(&broker_addr))) {
 		tm_printf((UB*)"mqtt: bad MQTT_BROKER_IP\n");
+		schedule_retry();
 		return;
 	}
 	IP_SET_TYPE(&broker_addr, IPADDR_TYPE_V4);
 
-	client_info.client_id = MQTT_CLIENT_ID;
+	client_info.client_id = make_client_id();
 	client_info.keep_alive = MQTT_UTK_KEEPALIVE_S;
 
 	if(APP_MODE()) {
@@ -341,6 +411,6 @@ void mqtt_utk_start(void)
 				  connection_cb, NULL, &client_info);
 	if(err != ERR_OK) {
 		tm_printf((UB*)"mqtt: mqtt_client_connect() failed, err=%d\n", (int)err);
-		connecting = 0;
+		schedule_retry();	/* not on the next 2 ms poll */
 	}
 }

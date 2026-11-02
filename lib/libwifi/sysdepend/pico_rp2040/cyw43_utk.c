@@ -236,6 +236,14 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
         (void)cyw43_wifi_get_mac(&cyw43_state, CYW43_ITF_STA,
                                  radio_status.mac);
 #if TM_NET_LWIP
+        /* Power saving off (telemetry fix, Buddy 1). cyw43_wifi_set_up()
+         * above selects the driver's default PM2 mode, which sleeps the radio
+         * between beacons: the car then draws so little current that many
+         * USB power banks switch themselves off, and every incoming command
+         * can wait up to 200 ms. The bare-metal robocar_comms (comms.c) turned
+         * it off the same way; only this task may call cyw43, so it goes here. */
+        (void)cyw43_wifi_pm(&cyw43_state, CYW43_NONE_PM);
+
         /* Join instead of scan: with lwIP wired in, the point of coming up
          * is a working network, not a diagnostic scan. cyw43_cb_tcpip_init()
          * already ran (from inside cyw43_wifi_set_up() above) and started
