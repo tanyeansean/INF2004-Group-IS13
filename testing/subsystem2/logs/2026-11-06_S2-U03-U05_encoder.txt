@@ -1,0 +1,27 @@
+S2-U03 .. S2-U05 wheel encoders, hand-turned, car lifted, make TEST=1
+Date: 2026-11-06   Tester: Tan Yean Sean   Board: Robo Pico + Pico W
+Wiring: jumper wires. Left Grove 4: GND, 3V3, A=GP16, B=GP17. Right Grove 1: GND, 3V3, A=GP0, B=GP1.
+
+--- Run 1 (wheels spun continuously, ENC_INVERT_LEFT=0): direction check ---
+[S2]  0 s left | count L -18962 R      0 | pins L A0 B0 (751 changes) R A0 B0 (0 changes)
+[S2] LEFT wheel counts DOWN going forward (-18962): set ENC_INVERT_LEFT to 1 in drv_encoder.h
+[S2]  0 s left | count L  -1454 R  17332 | pins L A0 B0 (69 changes) R A0 B0 (688 changes)
+[S2] invalid transitions: L 0, R 0
+-> left encoder counts down going forward (mirrored motor): ENC_INVERT_LEFT set to 1.
+-> S2-U04 failed only because the left wheel was still moving when the right test began
+   (a 3 s hands-off pause was added before each wheel).
+
+--- Run 2 (ENC_INVERT_LEFT=1, exactly 1 revolution per wheel), console excerpt ---
+[S2]  0 s left | count L      0 R   2487 | pins L A1 B1 (2 changes) R A0 B0 (366 changes)
+[S2] RIGHT wheel: 2487 counts per revolution (82 um per count)
+[TEST] S2-U04 PASS  right encoder (GP0/1) counts up going forward, left stays still
+[S2] invalid transitions: L 0, R 0
+[TEST] S2-U05 PASS  no invalid A/B transitions (no missed edges) while turning
+[TEST] subsystem2 SUMMARY 5 passed, 0 failed
+[TEST] S3-U01 PASS  1 us timer advances ~10 ms in a 10 ms delay
+[TEST] S3-U02 PASS  GP7 reads 0 or 1
+[TEST] subsystem3 SUMMARY 2 passed, 0 failed
+[TEST] S4-U01 PASS  example: running in a task context
+
+Note: the LEFT wheel's "counts per revolution" line of run 2 was not captured
+(S2-U03 PASS is implied by "5 passed, 0 failed").

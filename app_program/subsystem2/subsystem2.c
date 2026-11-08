@@ -4,6 +4,7 @@
  */
 
 #include "subsystem2.h"
+#include "drv_encoder.h"
 
 EXPORT ID	mbf_line_err;	/* IF-01, owned by S2 (the receiver) */
 EXPORT ID	mbf_barcode;	/* IF-02 */
@@ -35,6 +36,7 @@ LOCAL ID make_mbf(UW msg_size, UW msgs)
 EXPORT ER subsystem2_init(void)
 {
 	drv_motor_init();		/* motors stopped first thing */
+	(void)drv_encoder_init();	/* counts once barcode_task enables IRQ 13 */
 	nav_map_init(&g_nav_map);
 
 	mbf_line_err = make_mbf(sizeof(line_err_t), S2_LINE_MSGS);

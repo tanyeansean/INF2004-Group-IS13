@@ -12,6 +12,9 @@ Define a test here before running it. Test IDs never change.
 |---|---|---|---|---|---|
 | S2-U01 | sample values stay within 0..100 | | auto | `subsystem2_test.c` | `[TEST] S2-U01 PASS` |
 | S2-U02 | free slots and free blocks within pool size | IF-02 | auto | `subsystem2_test.c` | `[TEST] S2-U02 PASS` |
+| S2-U03 | left wheel encoder (GP16/17) counts up when the wheel turns forward; right count stays still | encoders | manual + auto | `make TEST=1`, car lifted, turn the LEFT wheel forward exactly 1 revolution when prompted (10 s) | `[TEST] S2-U03 PASS`, counts per revolution printed |
+| S2-U04 | right wheel encoder (GP0/1) counts up when the wheel turns forward; left count stays still | encoders | manual + auto | same as S2-U03, RIGHT wheel | `[TEST] S2-U04 PASS`, counts per revolution printed |
+| S2-U05 | no invalid A/B transitions (missed edges) during S2-U03/U04 | encoders | auto | `subsystem2_test.c` | `[TEST] S2-U05 PASS` |
 
 *Method:* **auto** = `TEST_CHECK` in code, result printed on the console;
 **manual** = a person observes the result (LED, scope, meter, phone app…).

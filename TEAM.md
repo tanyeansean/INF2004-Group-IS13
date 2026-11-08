@@ -50,8 +50,8 @@ fixed.
 | Pin | Owner | Used for |
 |---|---|---|
 | GP23, GP24, GP25, GP29 | *reserved* | Pico W radio |
-| GP0 | | (taken whenever the team builds with `CRASH_REPORT=1`) |
-| GP1 | | (taken whenever the team builds with `CRASH_REPORT=1`) |
+| GP0 | S2 | right wheel encoder phase A, Grove 1, edge interrupt, pull-up (UART0 instead when built with `CRASH_REPORT=1`: right encoder then off) |
+| GP1 | S2 | right wheel encoder phase B, Grove 1, edge interrupt, pull-up (UART0 instead when built with `CRASH_REPORT=1`: right encoder then off) |
 | GP2 | | |
 | GP3 | | |
 | GP4 | S5 | HC-SR04 TRIG (S5 not started yet) |
@@ -66,8 +66,8 @@ fixed.
 | GP13 | | |
 | GP14 | | |
 | GP15 | | |
-| GP16 | | |
-| GP17 | | |
+| GP16 | S2 | left wheel encoder phase A, Grove 4, edge interrupt, pull-up |
+| GP17 | S2 | left wheel encoder phase B, Grove 4, edge interrupt, pull-up |
 | GP18 | | |
 | GP19 | | |
 | GP20 | S2 | Robo Pico button: start / stop (active low, pull-up) |
@@ -114,7 +114,7 @@ the drivers have no locking to stop it.
 | SPI1 | | | |
 | ADC (kernel driver `adca`) | S3 | `line_task` | GP26, GP27 |
 | PWM slices 4, 5 | S2 | `motor_task` | GP8–GP11 (10 kHz, wrap 255) |
-| GPIO interrupt IO_IRQ_BANK0 (IRQ 13, only one `tk_def_int`) | S3 (handler in `drv_track.c`) | ISR, enabled by `barcode_task` on core 0 | GP7 now. S5's GP5 echo and S2's encoders must be added to this handler, not registered again |
+| GPIO interrupt IO_IRQ_BANK0 (IRQ 13, only one `tk_def_int`) | S3 (handler in `drv_track.c`) | ISR, enabled by `barcode_task` on core 0 | GP7, plus S2's wheel encoders GP0/1 and GP16/17 (`drv_encoder_irq()`, called from this handler). S5's GP5 echo is added here too, never registered again |
 | TIMER (1 µs counter, read only) | S3 starts it | any task may read | – |
 | WiFi radio, TCP/IP, MQTT | *kernel* | `cyw43_utk_task` (built in) | GP23–25, GP29 |
 

@@ -9,10 +9,10 @@
  *	  1 us timer     : TIMER TIMERAWL (read-only after start-up).
  *
  *	GPIO interrupt (IO_IRQ_BANK0, IRQ 13): only ONE tk_def_int() may exist
- *	for it.  In this build subsystem 3 owns it and serves GP7 only.  When
- *	Joe's echo (GP5, subsystem 5) or Sean's encoders join, this handler
- *	becomes the shared dispatcher: add their pins here and call their
- *	edge functions (Joe's drv_hcsr04_edge() takes the GP5 event nibble).
+ *	for it.  Subsystem 3 owns it and it is the shared dispatcher: GP7 here,
+ *	Joe's echo (GP5, subsystem 5: drv_hcsr04_edge() takes the GP5 event
+ *	nibble) and Sean's wheel encoders (GP0/GP1, GP16/GP17, subsystem 2:
+ *	drv_encoder_irq() reads and clears its own pins).
  *	Subsystem 5 must then be built with S5_OWN_GPIO_IRQ=0.
  *
  *	ISR <-> task: the ISR only pushes timestamps into the SPSC edge queue
@@ -26,6 +26,7 @@
 #if APP_WITH_S5
 #include "../subsystem5/subsystem5.h"	/* drv_hcsr04_edge() for GP5 */
 #endif
+#include "../subsystem2/drv_encoder.h"	/* drv_encoder_irq(): GP0/1, GP16/17 */
 
 /* ---- RP2040 registers not covered by libbsp ---- */
 #define REG_ALIAS_SET		(0x2000U)
@@ -192,6 +193,8 @@ LOCAL void gpio_bank0_inthdr(UINT intno)
 		}
 	}
 #endif
+	/* GP0/GP1, GP16/GP17: Sean's wheel encoders (subsystem 2) */
+	drv_encoder_irq(core);
 	if ((ev & S3_EVT_EDGES) == 0U) {
 		return;
 	}

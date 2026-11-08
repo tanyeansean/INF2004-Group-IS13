@@ -5,9 +5,10 @@
  *
  *	uT-Kernel port of the car logic that ran in integrated_car/main.c and
  *	motor.c: straddle steering, junction stop / barcode turns, start / stop
- *	/ speed, open-loop PWM.  No encoders or PID yet: Motor Control drives
- *	the PWM it is given (motor.c stand-in) until Sean's 20 ms PID replaces
- *	it behind the same queue.
+ *	/ speed, open-loop PWM.  Wheel encoders count (drv_encoder.h) but
+ *	nothing uses them yet: Motor Control drives the PWM it is given
+ *	(motor.c stand-in) until Sean's 20 ms PID replaces it behind the same
+ *	queue.
  *
  *	Inputs, owned here (the receiver creates the object):
  *	  IF-01  mbf_line_err  line_err_t, 2 bytes, every 5 ms   (from S3)
