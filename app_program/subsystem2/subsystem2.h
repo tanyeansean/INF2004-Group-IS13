@@ -23,6 +23,7 @@
 
 #include "../app.h"
 #include "shared_types.h"	/* contract: line_err_q, barcode_q, cmd_q, faults */
+#include "drv_encoder.h"	/* wheel encoder counts, wheel constants */
 
 #define S2_PRI_MOTOR		14	/* band 14-15 (TEAM.md) */
 #define S2_PRI_MISSION		15
@@ -71,6 +72,38 @@ static inline H s2_wheel_get(UW m, UW shift)
 IMPORT ID	mbf_motor;
 IMPORT void	motor_task(INT stacd, void *exinf);
 IMPORT void	mission_task(INT stacd, void *exinf);
+
+/* ---------------------------------------------------------------------
+ *  Odometry (task_motor.c): per-wheel distance and speed from the wheel
+ *  encoders, updated by motor_task about every 20 ms (the kernel tick is
+ *  10 ms, so a window is 18-30 ms; speed uses its measured length).
+ *  + = forward.  Any task on either core reads a consistent copy with
+ *  s2_odom_get().  Car centre: (left + right) / 2.
+ * --------------------------------------------------------------------- */
+#define S2_ODOM_PERIOD_US	20000U	/* nominal window */
+#define S2_ODOM_JITTER_US	2000U	/* tick vs 1 us timer: sample from 18 ms */
+#define S2_ODOM_MAX_WINDOW_US	200000U	/* longer (task starved): speed kept */
+
+typedef struct {
+	W	count_l, count_r;	/* encoder counts at the sample        */
+	W	dist_mm_l, dist_mm_r;	/* travelled since boot, mm            */
+	W	speed_mms_l, speed_mms_r; /* over the last window, mm/s        */
+	UW	window_us;		/* length of that window               */
+	UW	t_us;			/* sample time (1 us TIMER, wraps)     */
+	UW	updates;		/* samples so far: 0 = not started     */
+} s2_odom_t;
+
+IMPORT void	s2_odom_get(s2_odom_t *p);
+
+/* Encoder counts -> micrometres in 32 bits, exact for up to +/-2147 m of
+   travel: counts = q * CPR + r, so q whole revolutions plus the rest. */
+static inline W s2_counts_to_um(W counts)
+{
+	W const q = counts / ENC_COUNTS_PER_REV;
+	W const r = counts % ENC_COUNTS_PER_REV;
+
+	return (q * ENC_WHEEL_CIRC_UM) + ((r * ENC_WHEEL_CIRC_UM) / ENC_COUNTS_PER_REV);
+}
 
 /* drv_motor.c, called only by motor_task (and once at init, motors off) */
 IMPORT void	drv_motor_init(void);

@@ -14,7 +14,6 @@
 #define S2_ENC_SPIN_S		15	/* seconds to turn one wheel by hand */
 #define S2_ENC_POLL_MS		10	/* level sampling, independent of the ISR */
 #define S2_ENC_MIN_COUNTS	20	/* less than this: no real signal   */
-#define S2_ENC_CIRC_UM		204204U	/* pi x 65 mm wheel, in micrometres */
 #define S2_ENC_CAL_WAIT_S	60	/* wait for READY (line calibration) */
 #define S2_ENC_PAUSE_MS		3000	/* read this to start, hands off    */
 
@@ -59,7 +58,7 @@ LOCAL void enc_report(const char *wheel, W d, UW pin_chg, const char *flag)
 {
 	if (d >= S2_ENC_MIN_COUNTS) {
 		tm_printf((UB *)"[S2] %s wheel: %d counts per revolution (%u um per count)\n",
-			  wheel, (INT)d, (UINT)(S2_ENC_CIRC_UM / (UW)d));
+			  wheel, (INT)d, (UINT)((UW)ENC_WHEEL_CIRC_UM / (UW)d));
 	} else if (d <= -S2_ENC_MIN_COUNTS) {
 		tm_printf((UB *)"[S2] %s wheel counts DOWN going forward (%d):"
 			  " set %s to 1 in drv_encoder.h\n", wheel, (INT)d, flag);
@@ -128,6 +127,37 @@ EXPORT void subsystem2_test(void)
 		  (UINT)(bad_l - bad_l0), (UINT)(bad_r - bad_r0));
 	TEST_CHECK("S2-U05", (bad_l == bad_l0) && (bad_r == bad_r0),
 		   "no invalid A/B transitions (no missed edges) while turning");
+
+	/* S2-U06: counts -> distance, both signs, whole and part revolutions */
+	TEST_CHECK("S2-U06",
+		   (s2_counts_to_um(ENC_COUNTS_PER_REV) == ENC_WHEEL_CIRC_UM) &&
+		   (s2_counts_to_um(-ENC_COUNTS_PER_REV) == -ENC_WHEEL_CIRC_UM) &&
+		   (s2_counts_to_um(10 * ENC_COUNTS_PER_REV + (ENC_COUNTS_PER_REV / 2)) ==
+		    (10 * ENC_WHEEL_CIRC_UM) + ((ENC_COUNTS_PER_REV / 2) * ENC_WHEEL_CIRC_UM) / ENC_COUNTS_PER_REV) &&
+		   (s2_counts_to_um(0) == 0),
+		   "encoder counts convert to micrometres (1 rev = wheel circumference)");
+
+	/* S2-U07: motor_task publishes odometry every 20-30 ms; wheels at rest
+	   (hands off the wheels) read 0 mm/s */
+	{
+		s2_odom_t	o1, o2;
+
+		tm_printf((UB *)"[S2] S2-U07: hands off both wheels (1 s)\n");
+		tk_dly_tsk(1000);
+		s2_odom_get(&o1);
+		tk_dly_tsk(300);
+		s2_odom_get(&o2);
+		tm_printf((UB *)"[S2] odometry: %u samples in 300 ms, window %u us,"
+			  " L %d mm %d mm/s, R %d mm %d mm/s\n",
+			  (UINT)(o2.updates - o1.updates), (UINT)o2.window_us,
+			  (INT)o2.dist_mm_l, (INT)o2.speed_mms_l,
+			  (INT)o2.dist_mm_r, (INT)o2.speed_mms_r);
+		TEST_CHECK("S2-U07", ((o2.updates - o1.updates) >= 8U) &&
+			   (o2.window_us >= (S2_ODOM_PERIOD_US - S2_ODOM_JITTER_US)) &&
+			   (o2.window_us <= 40000U) &&
+			   (o2.speed_mms_l == 0) && (o2.speed_mms_r == 0),
+			   "odometry updated about every 20 ms, 0 mm/s with the wheels still");
+	}
 
 	TEST_SUMMARY("subsystem2");
 }

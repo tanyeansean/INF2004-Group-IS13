@@ -40,9 +40,14 @@
 #define ENC_INVERT_RIGHT	0
 #endif
 
-/* Wheel incl. rubber tyre, measured 6.5 cm.  Counts per wheel revolution
-   is not known yet: measure it with S2-U03 / S2-U04. */
+/* Wheel incl. rubber tyre, measured 6.5 cm: circumference pi x 65 mm.
+   Counts per wheel revolution (x4 decoding): right wheel measured 2487,
+   turned by hand once (S2-U04, 2026-11-06).  13 PPR x 4 x 1:48 gearbox
+   would give 2496: change this one number if the left wheel or the motor
+   datasheet says otherwise. */
 #define ENC_WHEEL_DIAM_MM	65U
+#define ENC_WHEEL_CIRC_UM	204204	/* micrometres per wheel revolution */
+#define ENC_COUNTS_PER_REV	2487	/* -> 82 um per count               */
 
 #if BOARD_UART0_FREE
 #define ENC_RIGHT_ENABLED	1
