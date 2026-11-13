@@ -78,9 +78,12 @@ EXPORT void drv_track_timer_init(void)
 			;
 		}
 	}
-	if ((in_w(S3_WDT_TICK) & S3_WDT_TICK_RUNNING) == 0U) {
-		out_w(S3_WDT_TICK, S3_WDT_TICK_ENABLE | S3_XOSC_MHZ);
-	}
+	/* Always set the tick generator to 12 cycles (1 us at clk_ref 12 MHz).
+	   After power-on it is already enabled with CYCLES = 0 (reset value
+	   0x200), i.e. one tick per 512 cycles: TIMER then runs at 23,437 us
+	   per second, so "start only if not running" left it 43x slow.
+	   Found and tested on the car by Jin, 13 Nov (PROJECT CONTEXT v2). */
+	out_w(S3_WDT_TICK, S3_WDT_TICK_ENABLE | S3_XOSC_MHZ);
 }
 
 EXPORT UW drv_track_now_us(void)
