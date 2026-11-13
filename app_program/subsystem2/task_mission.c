@@ -32,8 +32,12 @@
 #ifndef STEERING_ENABLED
 #define STEERING_ENABLED	1
 #endif
-#define BASE_PWM_M1		36
-#define BASE_PWM_M2		36	/* same as M1: no trim, both wheels equal */
+/* 36 -> 45 (Jin, 13 Nov): at 36 Jin's car stalled 2 of 3 runs (once on the
+   black ramp, once on flat; wheels 30-55 mm/s). At 45: 5 of 5 runs over the
+   ramp, plus 13 more runs later. Obstacle moves use AV_DRIVE_PWM /
+   AV_TURN_PWM, so they don't change. Logs: testing/subsystem4/logs/2026-11-13_*. */
+#define BASE_PWM_M1		45
+#define BASE_PWM_M2		45	/* same as M1: no trim, both wheels equal */
 #define STEER_MAX		36	/* clamp on |steer| = max one-wheel offset */
 #define STEER_ERR_DIV		14	/* steer = err/14; err is +-511 -> +-36 */
 #define STEER_HOLD_LEVEL	16	/* light steer kept while the line sits
