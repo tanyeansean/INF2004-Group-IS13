@@ -28,9 +28,17 @@
 #define OA_DIST_MAX_CM		(254U)
 #define OA_DIST_OUT_OF_RANGE	(255U)	/* Only meaning: beyond 254 cm.           */
 #define OA_NO_ECHO_LIMIT	(5U)	/* Consecutive no-echo pings -> fault.    */
+/* TUNE: echoes shorter than this are rejected as noise (false near-field
+   echo / crosstalk, seen on the car as phantom 3-4 cm "obstacles"). The
+   car stops at OA_STOP_DIST_CM, so nothing real is ever this close.
+   Must stay below OA_BYPASS_ABORT_CM. */
+#define OA_DIST_MIN_VALID_CM	(6U)
 
 /* ---------------------------------------------------------------- Detection */
-#define OA_STOP_DIST_CM		(25U)	/* TUNE: obstacle confirmed below this.   */
+/* TUNE: obstacle confirmed below this. Must be far enough for the narrow
+   sweep (+-25 deg) and the wide beam to see past a ~15 cm object: from
+   25 cm every angle hit it (L=0 R=0); edges first showed at ~30 cm. */
+#define OA_STOP_DIST_CM		(35U)
 #define OA_CONFIRM_COUNT	(2U)	/* Consecutive readings to confirm.       */
 
 /* ---------------------------------------------------------------- Servo */
@@ -81,14 +89,22 @@
 /* ---------------------------------------------------------------- Waits */
 #define OA_WAIT_CHUNK_MS	(50U)	/* <= 60 ms, agreed for the heartbeat.    */
 #define OA_STOP_ACK_TIMEOUT_MS	(500U)
-#define OA_REVERSE_TIMEOUT_MS	(3000U)
-#define OA_BYPASS_TIMEOUT_MS	(10000U) /* Must be LONGER than Mission Control's
-					    own bypass limit (S2_BYP_TIMEOUT_MS),
-					    so S2 always gives up first. The
-					    timed open-loop bypass takes ~5-7 s;
-					    Week 10 grade A wants < 3 s.        */
-#define OA_BYPASS_POLL_MS	(20U)
-#define OA_BYPASS_ABORT_CM	(10U)	/* TUNE: too close during bypass.         */
+#define OA_MOVE_TIMEOUT_MS	(8000U)	/* One motion_q move not finished in this
+					   long: Mission Control is not answering. */
+
+/* ------------------------------------------------- Bypass + line recovery */
+/* S5 plans every leg; Mission Control drives each one (motion_q) and its
+   open-loop distance / angle calibration decides how accurate they are. */
+#define OA_REVERSE_CM		(15U)	/* TUNE: back off this far, then rescan.  */
+#define OA_TURN_OUT_DEG		(45U)	/* Leave / rejoin the line at 45 deg.      */
+#define OA_DEFAULT_SIDESTEP_CM	(20U)	/* If the profile gives none (255).        */
+#define OA_PASS_EXTRA_CM	(25U)	/* TUNE: obstacle depth + car length: drive
+					   this far past the obstacle's front.   */
+#define OA_SEEK_FACTOR		(2U)	/* Look for the line up to 2x the expected
+					   distance before the second search.    */
+#define OA_SEEK_MAX_CM		(40U)	/* TUNE: second search, square to the line. */
+#define OA_MOVE_MAX_CM		(127U)	/* motion_q param is 8-bit signed.         */
+#define OA_BYPASS_ABORT_CM	(10U)	/* TUNE: too close during a forward leg.   */
 
 /*
  * Optional timing probe (Lab 3/5: a GPIO write costs ~30 ns, tm_printf
@@ -96,8 +112,10 @@
  * make ... EXTRA_CFLAGS=-DOA_PROBE_PIN=15 after adding that hook, or edit.
  * HIGH from "obstacle confirmed" until the plan is sent (or CLEAR/FAULT).
  */
-/* 1: print one "[S5 dbg]" line per second with the raw sensor readings,
-   and the reason whenever S5 faults. Set 0 once the sensor is trusted. */
+/* 1: while the state machine runs (OA_SENSOR_PROBE 0), print at most one
+   "[S5 dbg] state=.. ping=.." line per second from oa_ping(), plus the
+   reason once whenever S5 faults. Nothing prints before Mission Control
+   sends MC_READY. Set 0 once the sensor is trusted. */
 #ifndef OA_DEBUG
 #define OA_DEBUG		(1)
 #endif

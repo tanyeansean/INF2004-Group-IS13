@@ -6,6 +6,7 @@
  *	S5_STANDALONE = 0 (default, integrated car):
  *	  heartbeat  -> flg_hb (S1), bit HB_OBSTACLE_AVOID (hb_bits.h)
  *	  obstacle_q -> mbf_obstacle (S2, Mission Control: the receiver owns it)
+ *	  motion_q   -> mbf_motion   (S2, Mission Control: the receiver owns it)
  *	  faults     -> flg_faults (S2), bits FAULT_BIT_US_* (shared_types.h)
  *	  Replies come back on flg_avoid (owned by S5, subsystem5.h).
  *	S5_STANDALONE = 1 (bench only, S5 alone on a board):
@@ -33,29 +34,36 @@
 #endif
 
 #if S5_STANDALONE
+#include "../subsystem2/shared_types.h"	/* motor_cmd_msg_t (motion_q format) */
 IMPORT ID	s5_stub_hb_flg;
 IMPORT ID	s5_stub_fault_flg;
 IMPORT ID	s5_stub_obstacle_mbf;
+IMPORT ID	s5_stub_motion_mbf;
 #define S5_HB_FLG		(s5_stub_hb_flg)
 #define S5_FAULT_FLG		(s5_stub_fault_flg)
 #define S5_OBSTACLE_MBF		(s5_stub_obstacle_mbf)
+#define S5_MOTION_MBF		(s5_stub_motion_mbf)
 #define S5_HB_BIT		(1U << 5)
 #define S5_FAULT_NO_ECHO	(1U << 8)
 #define S5_FAULT_NO_ROUTE	(1U << 9)
 #define S5_FAULT_TIMEOUT	(1U << 10)
+#define S5_FAULT_NO_LINE	(1U << 11)
 #else
 #include "../subsystem1/subsystem1.h"	/* flg_hb, HB_OBSTACLE_AVOID     */
-#include "../subsystem2/subsystem2.h"	/* mbf_obstacle, flg_faults, FAULT_BIT_* */
+#include "../subsystem2/subsystem2.h"	/* mbf_obstacle, mbf_motion, flg_faults, FAULT_BIT_* */
 #define S5_HB_FLG		(flg_hb)
 #define S5_FAULT_FLG		(flg_faults)
 #define S5_OBSTACLE_MBF		(mbf_obstacle)
+#define S5_MOTION_MBF		(mbf_motion)
 #define S5_HB_BIT		(HB_OBSTACLE_AVOID)
 #define S5_FAULT_NO_ECHO	(FAULT_BIT_US_NO_ECHO)	/* bit 8  */
 #define S5_FAULT_NO_ROUTE	(FAULT_BIT_NO_SAFE_RTE)	/* bit 9  */
 #define S5_FAULT_TIMEOUT	(FAULT_BIT_US_TIMEOUT)	/* bit 10 */
+#define S5_FAULT_NO_LINE	(FAULT_BIT_NO_LINE)	/* bit 11 */
 #endif
 
-/* obstacle_q sizing for the stand-in (the real one is S2's choice). */
+/* obstacle_q / motion_q sizing for the stand-ins (the real ones are S2's). */
 #define S5_OBSTACLE_MBF_MSGS	(4U)
+#define S5_MOTION_MBF_MSGS	(2U)
 
 #endif /* S5_LINKS_H */

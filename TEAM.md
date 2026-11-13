@@ -183,7 +183,11 @@ sends to it or waits on it. Agree on the data format before coding.
 | IF-06 | S1 ↔ kernel WiFi task | message buffers (owned by S1) + `app_mqtt_*()` hooks | `mbf_mqtt_tx`, `mbf_mqtt_rx` | MQTT publish / receive (`s1_mqtt_bridge.c`, `mqtt_utk.c`) | Buddy 1; instructor OK given |
 | IF-07 | all → S1 | event flag (owned by S1) | `flg_hb` | heartbeat bits `HB_*` (`hb_bits.h`); the Safety Monitor that reads them is not built yet | all |
 | IF-08 | S1 writes, S2 reads | shared data, one aligned 32-bit word | `g_nav_map` (defined in S2) | barcode map: `nav_map_apply()` / `nav_map_snapshot()` (`nav_cmd.h`) | Buddies 1, 2, 3 |
-| IF-09 | S4 → S2 | message buffer (owned by S4, draft) | `mbf_terrain` | `terrain_msg_t`: 2 bytes, state / motion / off the floor (the old collision bit) / highest hump in mm (`shared_types.h`). S2 does not read it yet. When the car is lifted or overturned S4 also sends `CMD_ESTOP` on `mbf_cmd` (IF-04), as the Safety Monitor does, and sets fault bit 2 (`FAULT_BIT_COLLISION`, to be renamed). S4 also reads the wheel speeds with `s2_odom_get()` and publishes its latest report as one 32-bit word any task may read, `s4_report()` (`subsystem4.h`: tilt, turn rate, motion, terrain, lifted, last hump height, hump counter); `s4_new_run()` clears the highest hump of the run | Buddy 4; not yet agreed with Buddies 1 and 2 |
+| IF-09 | S5 → S2 | message buffer (owned by S2) | `mbf_obstacle` | 6-byte `obstacle_q` (`obstacle_msg.h`): OBSTACLE = stop now, S5 takes the wheels (`CAR_AVOID`); CLEAR = back to line following; FAULT = stop; PLAN = report only | Buddies 2, 5 |
+| IF-10 | S5 → S2 | message buffer (owned by S2) | `mbf_motion` | `motor_cmd_msg_t`, 2 bytes (`shared_types.h`): one bypass / line-recovery move (FWD, BWD, TURN L/R in cm / deg, FWD_TO_LINE). Only driven in `CAR_AVOID` | Buddies 2, 5 |
+| IF-11 | S2 → S5 | event flag (owned by S5) | `flg_avoid` | `AVOID_EVT_*` (`subsystem5.h`): MOTORS_STOPPED, MOVE_DONE, LINE_FOUND, ABORT, RESUME, MC_READY | Buddies 2, 5 |
+| IF-12 | all → S2 | event flag (owned by S2) | `flg_faults` | `FAULT_BIT_*` (`shared_types.h`); each task sets only its own bits, only S2 clears | all |
+| IF-13 | S4 → S2 | message buffer (owned by S4, draft) | `mbf_terrain` | `terrain_msg_t`: 2 bytes, state / motion / off the floor (the old collision bit) / highest hump in mm (`shared_types.h`). S2 does not read it yet. When the car is lifted or overturned S4 also sends `CMD_ESTOP` on `mbf_cmd` (IF-04), as the Safety Monitor does, and sets fault bit 2 (`FAULT_BIT_COLLISION`, to be renamed). S4 also reads the wheel speeds with `s2_odom_get()` and publishes its latest report as one 32-bit word any task may read, `s4_report()` (`subsystem4.h`: tilt, turn rate, motion, terrain, lifted, last hump height, hump counter); `s4_new_run()` clears the highest hump of the run | Buddy 4; not yet agreed with Buddies 1 and 2 |
 
 Each interface is tested by at least one integration test
 (`testing/integration/TEST_LOG.md`).
@@ -198,10 +202,10 @@ limit there. Subsystem 5's objects are not created while `APP_WITH_S5` = 0
 |---|---|---|---|---|---|---|
 | Task | 32 | 1 | 2 | 2 | 1 | 1 (+1) |
 | Semaphore | 16 | | | | | |
-| Event flag | 16 | 1 | | 1 | | 2 (+2) |
+| Event flag | 16 | 1 | 1 | 1 | | 2 (+2) |
 | Mailbox | 12 | | | | | |
 | Mutex | 12 | | | | | |
-| Message buffer | 12 | 3 | 4 | | 1 | (+1) |
+| Message buffer | 12 | 3 | 6 | | 1 | (+2) |
 | Fixed memory pool | 12 | | | | | |
 | Variable memory pool | 12 | | | | | |
 | Cyclic handler | 12 | | | | 1 | |

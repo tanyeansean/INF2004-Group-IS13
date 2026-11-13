@@ -33,15 +33,21 @@ IMPORT ID	mbf_barcode;	/* IF-02 */
 IMPORT ID	mbf_cmd;	/* IF-04 */
 IMPORT nav_map_t	g_nav_map;
 
-/* IF-06 (S5 -> S2): obstacle_q.  OBSTACLE_MSG_SIZE (6) bytes per message,
-   packed by obstacle_msg_pack() (subsystem5/obstacle_msg.h).  Owned here,
-   the receiver.  Mission Control drains it every pass and answers on S5's
-   flg_avoid (AVOID_EVT_MOTORS_STOPPED / LINE_REACQUIRED / RESUME). */
+/* IF-09 (S5 -> S2): obstacle_q.  OBSTACLE_MSG_SIZE (6) bytes per message,
+   packed by obstacle_msg_pack() (subsystem5/obstacle_msg.h).
+     OBSTACLE -> stop now; S5 has the wheels (CAR_AVOID) until CLEAR/FAULT
+     CLEAR    -> S5 is done: back to line following
+     FAULT    -> stop, idle until START
+     PLAN     -> report only (printed)
+   IF-10 (S5 -> S2): motion_q.  One motor_cmd_msg_t (shared_types.h) per
+   discrete move, executed only in CAR_AVOID.  Replies to both go on S5's
+   flg_avoid (AVOID_EVT_*, subsystem5/subsystem5.h). */
 IMPORT ID	mbf_obstacle;
+IMPORT ID	mbf_motion;
 
-/* Shared 16-bit fault flag (shared_types.h section 1, G1/G2/C5).  Each task
-   sets ONLY its own FAULT_BIT_* with tk_set_flg(); Mission Control reads
-   it every pass and is the only task that clears bits. */
+/* Shared 16-bit fault flag (shared_types.h section 1).  Each task sets
+   ONLY its own FAULT_BIT_* with tk_set_flg(); Mission Control is the only
+   task that clears bits. */
 IMPORT ID	flg_faults;
 
 /* ---------------------------------------------------------------------

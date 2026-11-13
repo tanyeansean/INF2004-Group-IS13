@@ -194,9 +194,12 @@ void profile_build(oa_scan_t const *p_scan, oa_profile_t *p_prof)
 	width = (y_left - y_right)
 	      - ((2 * (int32_t)p_scan->dist_cm[closest] * OA_TAN_HALF_BEAM_Q15) / Q15_TO_Q8);
 
-	/* 5. Side clearance: nearest thing outside the cluster on each side. */
+	/* 5. Side clearance: nearest thing outside the cluster on each side.
+	      Only hits (<= OA_OBSTACLE_RANGE_CM) count: only the lateral
+	      offset is compared, so a far wall (e.g. 100 cm at 15 deg = 26 cm
+	      sideways) used to "block" a side the car can pass on. */
 	for (i = 0U; i < p_scan->count; i++) {
-		if (((i >= lo) && (i <= hi)) || (p_scan->dist_cm[i] == OA_DIST_OUT_OF_RANGE)) {
+		if (((i >= lo) && (i <= hi)) || (!is_hit(p_scan->dist_cm[i]))) {
 			continue;
 		}
 

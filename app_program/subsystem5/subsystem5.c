@@ -16,10 +16,12 @@ EXPORT ID	flg_avoid;		/* S2 -> S5, owned by S5 (subsystem5.h) */
 EXPORT ID	s5_stub_hb_flg;		/* stand-ins until S1/S2 exist (s5_links.h) */
 EXPORT ID	s5_stub_fault_flg;
 EXPORT ID	s5_stub_obstacle_mbf;
+EXPORT ID	s5_stub_motion_mbf;
 
 /* Per-message overhead in a message buffer is a small length header;
    8 bytes per message is a safe margin. */
 #define S5_STUB_MBF_BYTES	((OBSTACLE_MSG_SIZE + 8U) * S5_OBSTACLE_MBF_MSGS)
+#define S5_STUB_MOTION_BYTES	((sizeof(motor_cmd_msg_t) + 8U) * S5_MOTION_MBF_MSGS)
 
 LOCAL ER s5_create_stubs(void)
 {
@@ -41,7 +43,14 @@ LOCAL ER s5_create_stubs(void)
 	cmbf.bufsz  = (SZ)S5_STUB_MBF_BYTES;
 	cmbf.maxmsz = (INT)OBSTACLE_MSG_SIZE;
 	s5_stub_obstacle_mbf = tk_cre_mbf(&cmbf);
-	return (s5_stub_obstacle_mbf < E_OK) ? s5_stub_obstacle_mbf : E_OK;
+	if (s5_stub_obstacle_mbf < E_OK) {
+		return s5_stub_obstacle_mbf;
+	}
+
+	cmbf.bufsz  = (SZ)S5_STUB_MOTION_BYTES;
+	cmbf.maxmsz = (INT)sizeof(motor_cmd_msg_t);
+	s5_stub_motion_mbf = tk_cre_mbf(&cmbf);
+	return (s5_stub_motion_mbf < E_OK) ? s5_stub_motion_mbf : E_OK;
 }
 #endif /* S5_STANDALONE */
 

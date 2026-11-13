@@ -68,21 +68,23 @@
 #define FAULT_BIT_US_NO_ECHO	(1U << 8)	/* Buddy 5: = S5_FAULT_NO_ECHO        */
 #define FAULT_BIT_NO_SAFE_RTE	(1U << 9)	/* Buddy 5: = S5_FAULT_NO_ROUTE       */
 #define FAULT_BIT_US_TIMEOUT	(1U << 10)	/* Buddy 5: = S5_FAULT_TIMEOUT        */
-/* bits 11-14 spare */
+#define FAULT_BIT_NO_LINE	(1U << 11)	/* Buddy 5: = S5_FAULT_NO_LINE, line
+						   not reacquired after a bypass */
+/* bits 12-14 spare */
 #define FAULT_BIT_WIFI_LOSS	TELEM_FAULT_WIFI_LOSS	/* Buddy 1: bit 15, report-only */
 
 #define FAULT_MASK_REPORT_ONLY	(FAULT_BIT_WIFI_LOSS)
 #define FAULT_MASK_RECOVERABLE	(FAULT_BIT_MQTT_ESTOP | FAULT_BIT_LINE_UNCAL |	\
 				 FAULT_BIT_COLLISION  | FAULT_BIT_US_NO_ECHO |	\
-				 FAULT_BIT_NO_SAFE_RTE | FAULT_BIT_US_TIMEOUT)
+				 FAULT_BIT_NO_SAFE_RTE | FAULT_BIT_US_TIMEOUT |	\
+				 FAULT_BIT_NO_LINE)
 #define FAULT_MASK_CRITICAL	(FAULT_BIT_MOTOR_STALL | FAULT_BIT_ENC_FAULT |	\
 				 FAULT_BIT_IMU_FAULT   | FAULT_BIT_TASK_HUNG)
 
 /* Safety Monitor E_STOP event flag (estop_evt). */
 #define ESTOP_FLAG_ACTIVE	(1U << 0)
 
-/* Obstacle handshake flag (flg_avoid): AVOID_EVT_MOTORS_STOPPED,
- * AVOID_EVT_LINE_REACQUIRED, AVOID_EVT_RESUME, owned by Joe in
+/* Obstacle handshake flag (flg_avoid): AVOID_EVT_*, owned by Joe in
  * app_program/subsystem5/subsystem5.h (included by Mission Control's .c,
  * not here, because that header needs the kernel types from app.h). */
 
@@ -104,17 +106,21 @@
  * Bits 0..2  (3 bits): mode (motor_mode_t)
  * Bits 3..7  (5 bits): speed_cms (0..20 cm/s, clamped)
  * Bits 8..15 (8 bits): param (signed steering trim -100..+100 in LINE_STEER,
- *                      or distance in cm / angle in deg for discrete moves) */
+ *                      or distance in cm / angle in deg for discrete moves)
+ * Also the format of motion_q (IF-10, S5 -> Mission Control): the bypass
+ * and line recovery ask for discrete moves with it. */
 typedef uint16_t motor_cmd_msg_t;
 
 typedef enum {
-	MCMD_STOP       = 0,
-	MCMD_LINE_STEER = 1,
-	MCMD_FWD_DIST   = 2,
-	MCMD_BWD_DIST   = 3,
-	MCMD_TURN_LEFT  = 4,
-	MCMD_TURN_RIGHT = 5,
-	MCMD_U_TURN     = 6
+	MCMD_STOP        = 0,
+	MCMD_LINE_STEER  = 1,
+	MCMD_FWD_DIST    = 2,
+	MCMD_BWD_DIST    = 3,
+	MCMD_TURN_LEFT   = 4,
+	MCMD_TURN_RIGHT  = 5,
+	MCMD_U_TURN      = 6,
+	MCMD_FWD_TO_LINE = 7	/* forward up to param cm, stop early as soon
+				   as a front IR sensor sees the line */
 } motor_mode_t;
 
 static inline motor_cmd_msg_t motor_cmd_pack(motor_mode_t mode, uint8_t speed_cms, int8_t param)

@@ -4,10 +4,10 @@
  *	Control and the Safety Monitor, so S5 can be tested on its own.
  *
  *	  - prints every obstacle_q message, decoded
- *	  - answers like Mission Control would:
+ *	  - answers like an IDLE Mission Control would (nothing moves):
  *	      OBSTACLE         -> MOTORS_STOPPED after 100 ms
- *	      PLAN LEFT/RIGHT  -> LINE_REACQUIRED after 1 s
- *	      PLAN REVERSE     -> MOTORS_STOPPED after 500 ms
+ *	      motion_q move    -> MOVE_DONE after 300 ms
+ *	                          (FWD_TO_LINE -> LINE_FOUND)
  *	      FAULT            -> RESUME after 3 s
  *	  - checks S5's heartbeat like the Safety Monitor: prints
  *	    "HEARTBEAT MISSED" if the bit is not seen for > 120 ms.
@@ -37,6 +37,7 @@ EXPORT void s5_bench_task(INT stacd, void *exinf)
 {
 	uint8_t		buf[OBSTACLE_MSG_SIZE];
 	obstacle_msg_t	msg;
+	motor_cmd_msg_t	mv;
 	INT		len;
 	UINT		flgptn;
 	UW		reply_bits  = 0U;
@@ -68,20 +69,21 @@ EXPORT void s5_bench_task(INT stacd, void *exinf)
 				reply_bits = AVOID_EVT_MOTORS_STOPPED; reply_at_ms = now_ms() + 100U;
 				break;
 			case OBS_MSG_PLAN:
-				if ((msg.plan == OBS_PLAN_LEFT) || (msg.plan == OBS_PLAN_RIGHT)) {
-					reply_bits = AVOID_EVT_LINE_REACQUIRED; reply_at_ms = now_ms() + 1000U;
-				} else if (msg.plan == OBS_PLAN_REVERSE) {
-					reply_bits = AVOID_EVT_MOTORS_STOPPED; reply_at_ms = now_ms() + 500U;
-				} else {
-					/* STOP: FAULT follows. */
-				}
-				break;
+				break;		/* report only */
 			case OBS_MSG_FAULT:
 				reply_bits = AVOID_EVT_RESUME; reply_at_ms = now_ms() + 3000U;
 				break;
 			default:
 				break;
 			}
+		}
+
+		if (tk_rcv_mbf(S5_MOTION_MBF, &mv, TMO_POL) == (INT)sizeof(mv)) {
+			tm_printf((UB*)"[S5 bench] move mode=%d param=%d\n",
+				  (INT)motor_cmd_get_mode(mv), (INT)motor_cmd_get_param(mv));
+			reply_bits  = (motor_cmd_get_mode(mv) == MCMD_FWD_TO_LINE)
+				    ? AVOID_EVT_LINE_FOUND : AVOID_EVT_MOVE_DONE;
+			reply_at_ms = now_ms() + 300U;
 		}
 
 		if ((reply_bits != 0U) && ((INT)(now_ms() - reply_at_ms) >= 0)) {
