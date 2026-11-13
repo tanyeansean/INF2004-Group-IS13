@@ -72,6 +72,12 @@ LOCAL UW	msgs_dropped = 0U;	/* mbf_terrain full (counted, not waited for) */
 LOCAL UB	last_motion = IMU_STATIONARY;	/* the latest motion event */
 LOCAL BOOL	stop_pending = FALSE;	/* a stop command still has to be sent */
 
+/* Diagnostics only (read, never written): the 1 us TIMER and the watchdog
+   tick generator that drives it.  Printed so a wrong timer rate can be
+   seen on the console (13 Nov: odometry went wrong after cold starts). */
+#define S4_DIAG_TIMERAWL	(0x40054028U)
+#define S4_DIAG_WDT_TICK	(0x4005802CU)
+
 EXPORT volatile UW	s4_report_word = 0U;	/* latest report (subsystem4.h) */
 LOCAL volatile UW	new_run_req = 0U;	/* s4_new_run() was called */
 
@@ -192,7 +198,11 @@ LOCAL void wait_for_line_calibration(void)
 
 /* Average some readings with the car flat and still.  Gives the direction
    of gravity on this floor. */
-LOCAL void calibrate(float *p_x, float *p_y, float *p_z)
+/* Average some readings with the car flat and still.  Returns FALSE if the
+   result can't be gravity (a still car reads about 1 g in total): on
+   13 Nov one start-up gave X, Y and Z all -4.00 g (the sensor's lowest
+   value), and every tilt after that would have been wrong. */
+LOCAL BOOL calibrate(float *p_x, float *p_y, float *p_z)
 {
 	float	x = 0.0f, y = 0.0f, z = 0.0f;
 	INT	good = 0;
@@ -230,6 +240,16 @@ LOCAL void calibrate(float *p_x, float *p_y, float *p_z)
 	print_g("Y", y);
 	print_g("Z", z);
 	tm_printf((UB *)")\n");
+
+	{
+		float const total2 = (x * x) + (y * y) + (z * z);
+
+		/* about 0.7 g to 1.3 g in total, squared */
+		if ((good < (CAL_SAMPLES / 2)) || (total2 < 0.49f) || (total2 > 1.69f)) {
+			return FALSE;
+		}
+	}
+	return TRUE;
 }
 
 LOCAL void print_events(UINT ev, const terrain_t *t)
@@ -369,13 +389,23 @@ EXPORT void terrain_task(INT stacd, void *exinf)
 	UW		fails = 0U;		/* failed reads since the last print */
 	UW		fails_in_row = 0U;
 	INT		count = 0;
+	UW		timer_prev = 0U;	/* TIMER at the last status line */
 
 	(void)stacd; (void)exinf;
 
 	sensor_start();
 	wait_for_line_calibration();
-	calibrate(&x, &y, &z);
+	/* A bad calibration (sensor not ready, loose wire) is retried after
+	   restarting the sensor, with the IMU fault bit set meanwhile. */
+	while (!calibrate(&x, &y, &z)) {
+		(void)tk_set_flg(flg_faults, FAULT_BIT_IMU_FAULT);
+		tm_printf((UB *)"[imu] FAULT: calibration is not about 1 g - restarting the sensor and trying again\n");
+		sensor_start();
+	}
 	terrain_init(&t, x, y, z);
+
+	tm_printf((UB *)"[imu] diag: watchdog TICK register 0x%x (cycles %u, should be 12)\n",
+		  (UINT)in_w(S4_DIAG_WDT_TICK), (UINT)(in_w(S4_DIAG_WDT_TICK) & 0x1FFU));
 
 	/* From here on, one pass per wake-up: every 10 ms */
 	tid_terrain = tk_get_tid();
@@ -456,11 +486,19 @@ EXPORT void terrain_task(INT stacd, void *exinf)
 				  (UINT)reads, (UINT)fails,
 				  flag_bits(flg_hb) & HB_TERRAIN_MONITOR, flag_bits(flg_faults),
 				  (UINT)msgs_sent, (UINT)msgs_dropped, (UINT)stops_sent);
-			/* Wheels: speeds from Sean's odometry; "none" = no data */
-			tm_printf((UB *)", wheels %s L %d R %d mm/s, turn %d deg/s\n",
-				  (t.wheels_ok != 0) ? ((t.wheels_seen == 3) ? "ok" : "not both seen")
-						     : "none",
-				  (INT)t.wheel_l, (INT)t.wheel_r, (INT)t.turn_dps);
+			/* Wheels: speeds from Sean's odometry; "none" = no data.
+			   timer: how far the 1 us TIMER moved since the last line,
+			   which is 100 kernel ticks = about 1 s, so about 1000000. */
+			{
+				UW const timer_now = in_w(S4_DIAG_TIMERAWL);
+
+				tm_printf((UB *)", wheels %s L %d R %d mm/s, turn %d deg/s, timer %u us/s\n",
+					  (t.wheels_ok != 0) ? ((t.wheels_seen == 3) ? "ok" : "not both seen")
+							     : "none",
+					  (INT)t.wheel_l, (INT)t.wheel_r, (INT)t.turn_dps,
+					  (UINT)(timer_now - timer_prev));
+				timer_prev = timer_now;
+			}
 			peak_jolt = 0.0f;
 			peak_lean = 0.0f;
 			t.up_speed_max = 0.0f;

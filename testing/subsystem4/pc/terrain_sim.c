@@ -351,6 +351,10 @@ int main(void)
 	run(1000, 0, 0, 0, DRIVE_SHAKE);
 	lift(600, 20.0f, DRIVE_SHAKE);
 	mark();
+	run(4000, 6.0f, 0, 0, 0.06f);		/* held in a hand 6 deg off level, 4 s */
+	check("S4-P28", (seen & TERRAIN_EV_PUT_DOWN) == 0U,
+	      "held in a hand about 6 deg off level for 4 s: still off the floor");
+	mark();
 	run(3500, 0, 0, 0, DRIVE_SHAKE);		/* put down and started at once */
 	hump(1000, 7.0f, 5.0f, DRIVE_SHAKE);
 	run(1000, 0, 0, 0, DRIVE_SHAKE);

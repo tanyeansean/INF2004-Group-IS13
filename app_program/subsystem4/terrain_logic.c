@@ -98,7 +98,9 @@
 #define PUT_DOWN_DEG	10.0f	/* leaning less than this, and ...        */
 #define PUT_DOWN_SHAKE	0.02f	/* ... shaking less than this (g) ...     */
 #define PUT_DOWN_MS	1000	/* ... for this long = back on the floor  */
-#define PUT_DOWN_LEVEL_MS 3000	/* or just level for this long, shaking or not */
+#define PUT_DOWN_LEVEL_MS 3000	/* or very level for this long, shaking or not */
+#define PUT_DOWN_LEVEL_DEG 4.0f	/* "very level": a hand holds the car 5-16 deg off
+				   (car test 13 Nov), driving reads under 2 deg */
 #define UP_REF_SMOOTH	0.005f	/* the usual force along gravity follows slowly (2 s) */
 #define UP_FADE		0.01f	/* up speed fades 1% per reading (about 1 s) */
 #define UP_STEP_MAX_G	0.3f	/* one reading adds at most this much push (g) */
@@ -491,7 +493,7 @@ static unsigned int lift_step(terrain_t *t, float x_g, float y_g, float z_g)
 		   is a car put down and started at once (driving shakes, but
 		   a driving car stays level); without it the whole next run
 		   would count no humps. */
-		t->level_ms = (t->lean_deg < PUT_DOWN_DEG) ? (t->level_ms + TERRAIN_READ_MS) : 0;
+		t->level_ms = (t->lean_deg < PUT_DOWN_LEVEL_DEG) ? (t->level_ms + TERRAIN_READ_MS) : 0;
 		t->down_ms  = ((t->lean_deg < PUT_DOWN_DEG) && (t->shake_g < PUT_DOWN_SHAKE))
 			      ? (t->down_ms + TERRAIN_READ_MS) : 0;
 		{
