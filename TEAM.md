@@ -2,7 +2,7 @@
 
 The template's example rows were replaced by the robot car on 29 Oct 2026:
 subsystems 1-3 run the car, ported from the bare-metal `integrated_car/` bench.
-Subsystem 4 reads the IMU and reports humps and collisions; Mission Control does not read them yet. Subsystem 5 is compiled but not started
+Subsystem 4 reads the IMU and reports humps and the car being lifted or overturned (which replaced collisions on 13 Nov). When the car is lifted or overturned it sends an emergency stop on `mbf_cmd`; Mission Control does not read its other reports yet. Subsystem 5 is compiled but not started
 (`APP_WITH_S5` in `app_program/app.h`) until it is tested.
 
 Fill this in at the start of the project and keep it up to date. It is the
@@ -22,7 +22,7 @@ subsystem, ask its owner or open a pull request for them to review.
 | 1 | Telemetry: packed MQTT live data, events, commands, barcode map (Buddy 1, Aurelius Ng Ker Fong) | 2500612 | | `app_program/subsystem1/` | `testing/subsystem1/` |
 | 2 | Mission Control + Motor Control: steering, junction stop / turns, start / stop, PWM (Buddy 2, Tan Yean Sean) | 2500224 | tanyeansean | `app_program/subsystem2/` | `testing/subsystem2/` |
 | 3 | Line Follow + Barcode Decode: front IR pair, Code 39 barcode (Buddy 3, Wong Yong Quan; logic in `track_purist/`) | 2500377 | yongquan1337 | `app_program/subsystem3/` | `testing/subsystem3/`, `track_purist/test/` |
-| 4 | IMU / terrain: GY-511 tilt, humps, hump height, collisions (Buddy 4, Lim Jin Hin) | 2500928 | | `app_program/subsystem4/` | `testing/subsystem4/` |
+| 4 | IMU / terrain: GY-511 tilt, humps, hump height, lifted or overturned (Buddy 4, Lim Jin Hin) | 2500928 | | `app_program/subsystem4/` | `testing/subsystem4/` |
 | 5 | Obstacle Avoid (Buddy 5, Joe Teo Wei Xuan): code in repo, not started yet | 2500177 | | `app_program/subsystem5/` | `testing/subsystem5/` |
 
 Shared files (`app_program/app_main.c`, `app_program/app.h`, this file)
@@ -183,7 +183,7 @@ sends to it or waits on it. Agree on the data format before coding.
 | IF-06 | S1 ↔ kernel WiFi task | message buffers (owned by S1) + `app_mqtt_*()` hooks | `mbf_mqtt_tx`, `mbf_mqtt_rx` | MQTT publish / receive (`s1_mqtt_bridge.c`, `mqtt_utk.c`) | Buddy 1; instructor OK given |
 | IF-07 | all → S1 | event flag (owned by S1) | `flg_hb` | heartbeat bits `HB_*` (`hb_bits.h`); the Safety Monitor that reads them is not built yet | all |
 | IF-08 | S1 writes, S2 reads | shared data, one aligned 32-bit word | `g_nav_map` (defined in S2) | barcode map: `nav_map_apply()` / `nav_map_snapshot()` (`nav_cmd.h`) | Buddies 1, 2, 3 |
-| IF-09 | S4 → S2 | message buffer (owned by S4, draft) | `mbf_terrain` | `terrain_msg_t`: 2 bytes, state / motion / collision / highest hump in mm (`shared_types.h`). S2 does not read it yet | Buddy 4; not yet agreed with Buddy 2 |
+| IF-09 | S4 → S2 | message buffer (owned by S4, draft) | `mbf_terrain` | `terrain_msg_t`: 2 bytes, state / motion / off the floor (the old collision bit) / highest hump in mm (`shared_types.h`). S2 does not read it yet. When the car is lifted or overturned S4 also sends `CMD_ESTOP` on `mbf_cmd` (IF-04), as the Safety Monitor does, and sets fault bit 2 (`FAULT_BIT_COLLISION`, to be renamed). S4 also reads the wheel speeds with `s2_odom_get()` and publishes its latest report as one 32-bit word any task may read, `s4_report()` (`subsystem4.h`: tilt, turn rate, motion, terrain, lifted, last hump height, hump counter); `s4_new_run()` clears the highest hump of the run | Buddy 4; not yet agreed with Buddies 1 and 2 |
 
 Each interface is tested by at least one integration test
 (`testing/integration/TEST_LOG.md`).
