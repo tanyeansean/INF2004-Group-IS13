@@ -68,6 +68,7 @@ typedef struct {
 	int		over_ms;	/* how long lean_deg has been above the overturn limit */
 	int		down_ms;	/* how long a lifted car has been level and still */
 	int		level_ms;	/* how long a lifted car has been level (still or not) */
+	int		spin_ms;	/* how long one wheel has spun free while tipped */
 } terrain_t;
 
 /* Start from the calibration reading (in g), taken flat and still. */

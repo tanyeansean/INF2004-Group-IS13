@@ -23,7 +23,10 @@
  *	     On the car (13 Nov) driving and the ramp never went above
  *	     0.02 m/s, and hand pick-ups reached 0.08-0.24 m/s;
  *	  2. it leans further than any hump could tip it, and stays there;
- *	  3. it leans so far that it is on its side or upside down.
+ *	  3. it leans so far that it is on its side or upside down;
+ *	  4. it leans and one wheel spins much faster than the other: a wheel
+ *	     in the air has nothing to push against (car test 13 Nov: tipped
+ *	     by hand, the air wheel went from 55 to 245 mm/s, the other 0).
  *	It stays "off the floor" until it has been level and still for a
  *	second.  While it is off the floor no humps are counted, so carrying
  *	the car can't add a hump or raise the highest height.
@@ -95,6 +98,11 @@
 #define LIFT_LEAN_MS	150	/* ... for this long = lifted             */
 #define OVERTURN_DEG	60.0f	/* leaning more than this ...             */
 #define OVERTURN_MS	100	/* ... for this long = overturned         */
+#define SPIN_LEAN_DEG	12.0f	/* leaning more than this (ramp: about 7) */
+#define SPIN_FAST_MMS	150.0f	/* ... one wheel faster than this ...     */
+#define SPIN_RATIO	2.5f	/* ... and this many times the other one  */
+#define SPIN_MS		50	/* ... for this long = lifted (a spin turn has
+				   both wheels equally fast: not counted)   */
 #define PUT_DOWN_DEG	10.0f	/* leaning less than this, and ...        */
 #define PUT_DOWN_SHAKE	0.02f	/* ... shaking less than this (g) ...     */
 #define PUT_DOWN_MS	1000	/* ... for this long = back on the floor  */
@@ -108,6 +116,11 @@
 #define READ_S		(TERRAIN_READ_MS / 1000.0f)
 
 #define RAD_TO_DEG	57.2958f
+
+static float absf(float v)
+{
+	return (v < 0.0f) ? -v : v;
+}
 
 /* Square root: keep averaging the guess with x / guess (Newton's method). */
 static float root(float x)
@@ -213,6 +226,7 @@ void terrain_init(terrain_t *t, float x_g, float y_g, float z_g)
 	t->over_ms = 0;
 	t->down_ms = 0;
 	t->level_ms = 0;
+	t->spin_ms = 0;
 }
 
 void terrain_new_run(terrain_t *t)
@@ -306,11 +320,6 @@ static unsigned int hump_step(terrain_t *t)
 		}
 	}
 	return ev;
-}
-
-static float absf(float v)
-{
-	return (v < 0.0f) ? -v : v;
 }
 
 void terrain_wheels(terrain_t *t, int ok, float left_mms, float right_mms)
@@ -420,6 +429,7 @@ static void leave_floor(terrain_t *t, terrain_lift_t how)
 	t->over_ms = 0;
 	t->down_ms = 0;
 	t->level_ms = 0;
+	t->spin_ms = 0;
 }
 
 /* Lifted or overturned?  One step per reading (in g). */
@@ -482,7 +492,19 @@ static unsigned int lift_step(terrain_t *t, float x_g, float y_g, float z_g)
 
 		t->up_ms   = (t->up_speed > LIFT_UP_SPEED) ? (t->up_ms + TERRAIN_READ_MS) : 0;
 		t->lean_ms = (t->lean_deg > LIFT_LEAN_DEG) ? (t->lean_ms + TERRAIN_READ_MS) : 0;
-		if ((t->up_ms >= LIFT_UP_MS) || (t->lean_ms >= LIFT_LEAN_MS)) {
+		{
+			float const	l = absf(t->wheel_l);
+			float const	r = absf(t->wheel_r);
+			float const	fast = (l > r) ? l : r;
+			float const	slow = (l > r) ? r : l;
+			int const	spinning = (t->wheels_ok != 0) && (t->wheels_seen == 3) &&
+					   (t->lean_deg > SPIN_LEAN_DEG) && (fast > SPIN_FAST_MMS) &&
+					   (fast > (SPIN_RATIO * slow));
+
+			t->spin_ms = spinning ? (t->spin_ms + TERRAIN_READ_MS) : 0;
+		}
+		if ((t->up_ms >= LIFT_UP_MS) || (t->lean_ms >= LIFT_LEAN_MS) ||
+		    (t->spin_ms >= SPIN_MS)) {
 			leave_floor(t, TERRAIN_LIFTED);
 			ev |= TERRAIN_EV_LIFTED;
 		}

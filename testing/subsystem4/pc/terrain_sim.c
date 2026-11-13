@@ -361,6 +361,36 @@ int main(void)
 	check("S4-P27", ((seen & TERRAIN_EV_PUT_DOWN) != 0U) && ((seen & TERRAIN_EV_HUMP_DONE) != 0U),
 	      "put down and driven off at once: back on the floor within 3.5 s, next hump counted");
 
+	/* ---- one wheel spinning free while the car tips (car test 13 Nov) ---- */
+	start();
+	w_ok = 1; w_l = 60.0f; w_r = 60.0f;
+	run(1000, 0, 0, 0, DRIVE_SHAKE);
+	mark();
+	{
+		int i;
+
+		for (i = 0; i < 1000; i += 10) {	/* tip to 35 deg over 1 s */
+			if (i >= 200) {
+				w_l = 245.0f; w_r = 0.0f;	/* left wheel in the air */
+			}
+			feed(35.0f * (float)i / 1000.0f, 0, 0, DRIVE_SHAKE);
+		}
+	}
+	printf("        detected after %d ms (lean rule alone: about 800 ms)\n", first_lift_ms);
+	check("S4-P29", ((seen & TERRAIN_EV_LIFTED) != 0U) && (first_lift_ms < 600),
+	      "tipped while driving, air wheel 245 mm/s: LIFTED before the 25 deg lean rule");
+
+	start();
+	w_ok = 1; w_l = 60.0f; w_r = 60.0f;
+	run(1000, 0, 0, 0, DRIVE_SHAKE);
+	mark();
+	w_l = -200.0f; w_r = 200.0f;		/* spin turn on the spot */
+	run(1000, 0, 0, 0, DRIVE_SHAKE);
+	w_l = 160.0f; w_r = 20.0f;		/* hard steer, car level */
+	run(1000, 0, 0, 0, DRIVE_SHAKE);
+	check("S4-P30", (seen & OFF_FLOOR) == 0U,
+	      "spin turn, and one wheel fast while level: not lifted");
+
 	printf("\n%d passed, %d failed\n", passed, failed);
 	return (failed == 0) ? 0 : 1;
 }
