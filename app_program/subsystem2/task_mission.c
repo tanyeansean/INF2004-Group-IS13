@@ -24,6 +24,7 @@
 #include "subsystem2.h"
 #include "../subsystem1/subsystem1.h"	/* flg_hb, IF-05 s1_post_*, link */
 #include "../subsystem3/subsystem3.h"	/* calibration, IF-03 line reset */
+#include "../subsystem4/subsystem4.h"	/* s4_new_run(): highest hump per run */
 #if APP_WITH_S5
 #include "../subsystem5/subsystem5.h"	/* flg_avoid, AVOID_EVT_* (IF-09/10 replies) */
 #endif
@@ -158,6 +159,11 @@ LOCAL void car_start(void)
 		(void)tk_set_flg(flg_avoid, AVOID_EVT_RESUME);
 	}
 #endif
+	/* A new run (S4, added 13 Nov by Jin): forget the highest hump, so
+	   moving the car by hand before START can't count, and clear S4's
+	   lifted / overturned bit (bit 2), which only Mission Control clears. */
+	(void)tk_clr_flg(flg_faults, ~(UINT)FAULT_BIT_COLLISION);
+	s4_new_run();
 	car_resume_follow();
 	tm_printf((UB *)"[car] START (base PWM M1=%d M2=%d)\n", g_base_m1, g_base_m2);
 }
