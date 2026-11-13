@@ -2,8 +2,8 @@
 
 The template's example rows were replaced by the robot car on 29 Oct 2026:
 subsystems 1-3 run the car, ported from the bare-metal `integrated_car/` bench.
-Subsystem 4 reads the IMU and reports humps and the car being lifted or overturned (which replaced collisions on 13 Nov). When the car is lifted or overturned it sends an emergency stop on `mbf_cmd`; Mission Control does not read its other reports yet. Subsystem 5 is compiled but not started
-(`APP_WITH_S5` in `app_program/app.h`) until it is tested.
+Subsystem 4 reads the IMU and reports humps and the car being lifted or overturned (which replaced collisions on 13 Nov). When the car is lifted or overturned it sends an emergency stop on `mbf_cmd`; Mission Control does not read its other reports yet. Subsystem 5 (obstacle avoidance) is switched on
+(`APP_WITH_S5` = 1 in `app_program/app.h`) since Joe's merge of 2 Nov; branch `latest-13-11-26` holds every subsystem's latest work.
 
 Fill this in at the start of the project and keep it up to date. It is the
 single place that says **who owns what**, so that five people can work in
