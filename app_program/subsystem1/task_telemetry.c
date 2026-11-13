@@ -19,6 +19,7 @@
 #include "comms.h"
 #include "../subsystem2/subsystem2.h"	/* IF-04: mbf_cmd */
 #include "../subsystem3/subsystem3.h"	/* s3_is_calibrated() */
+#include "../subsystem4/subsystem4.h"	/* s4_report(): IMU / humps (added 13 Nov by Jin) */
 
 #define S1_PERIOD_MS		10
 #define S1_STATUS_PER_POLL	16
@@ -29,6 +30,7 @@ LOCAL bool on_command(comms_cmd_t const *p_cmd)
 	switch (p_cmd->type) {
 	case CMD_RESET_PEAK:
 		telem_reset_peak();		/* Telemetry's own data */
+		s4_new_run();			/* and Terrain Monitor's highest hump */
 		return true;
 	case CMD_SUMMARY:
 		telem_publish_summary();	/* run totals so far */
@@ -56,6 +58,30 @@ LOCAL void update_faults(void)
 	}
 	faults |= (s1_safety_report_task() & 0x7U) << 12;
 	telem_set_faults((uint16_t)faults);
+}
+
+/* Subsystem 4 -> telemetry (added 13 Nov by Jin).  S4 publishes one 32-bit
+   word (s4_report(), single writer, so reading it here needs no lock).
+   Live data: tilt, turn rate, motion event.  Event: one hump event each
+   time S4's hump counter moves on, with that hump's height. */
+LOCAL void update_imu(void)
+{
+	static UINT	humps_seen = 0U;
+	static BOOL	b_started = FALSE;
+	UW const	r = s4_report();
+	UINT const	humps = s4_report_humps(r);
+
+	telem_set_imu(s4_report_tilt_deg(r), (float)s4_report_turn_dps(r),
+		      (imu_event_t)s4_report_motion(r));
+	if (!b_started) {
+		b_started = TRUE;		/* don't replay humps from before */
+		humps_seen = humps;
+	} else if (humps != humps_seen) {
+		humps_seen = humps;
+		telem_event_hump((float)s4_report_last_hump_mm(r) / 10.0f);
+	} else {
+		/* no new hump */
+	}
 }
 
 LOCAL INT sign7(UH v)
@@ -112,6 +138,7 @@ EXPORT void telemetry_task(INT stacd, void *exinf)
 			apply_status(m);
 		}
 		update_faults();
+		update_imu();
 		comms_poll();
 		telem_poll();
 		(void)tk_set_flg(flg_hb, HB_TELEMETRY);
