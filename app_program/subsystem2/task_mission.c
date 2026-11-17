@@ -240,10 +240,11 @@ LOCAL void maneuver_step(void)
 					   so its own calibration below            */
 #define AV_GAP_MS		150U	/* still between two moves                 */
 #define AV_SETTLE_MS		150U	/* let the car stop rolling before S5 scans */
-#define AV_IDLE_LIMIT_MS	8000U	/* CAR_AVOID, no move running and nothing
-					   from S5 for this long: give up. A
-					   coarse + fine scan with re-pings takes
-					   up to ~4 s, so keep well above that.  */
+#define AV_IDLE_LIMIT_MS	15000U	/* CAR_AVOID, no move running and nothing
+					   from S5 for this long: give up. A coarse
+					   + fine scan takes up to ~4 s at 5 deg
+					   steps (~8 s when 1 deg was tried); a
+					   generous backstop for a silent S5.     */
 #define AV_TRACK_MM		(110U)	/* Measured by Jin, 13 Nov: centre of the left
 					   tyre to centre of the right tyre. Copy of
 					   TRACK_MM in subsystem4/terrain_logic.c, which

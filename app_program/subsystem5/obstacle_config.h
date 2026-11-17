@@ -46,11 +46,11 @@
 
 /* ---------------------------------------------------------------- Servo */
 #define OA_SERVO_CENTRE_DEG	(90U)
-/* Sweep limited to centre +/- 30 deg: no physical room for more on the
-   car. Every commanded angle is clamped to this range. Widen these (and
+/* Sweep limited to centre +/- 30 deg (was +/- 25 until the mount was
+   widened): no room for more. Every commanded angle is clamped to this range. Widen these (and
    the coarse scan below) once the mount allows it. */
-#define OA_SERVO_MIN_DEG	(65U)	/* centre - 25: mount barely clears */
-#define OA_SERVO_MAX_DEG	(115U)	/* centre + 25                      */
+#define OA_SERVO_MIN_DEG	(60U)	/* centre - 30: mount widened by 5 deg */
+#define OA_SERVO_MAX_DEG	(120U)	/* centre + 30                       */
 #define OA_SERVO_PULSE_MIN_US	(500U)	/* TUNE: pulse at 0 deg.                  */
 #define OA_SERVO_PULSE_MAX_US	(2500U)	/* TUNE: pulse at 180 deg.                */
 #define OA_SERVO_MS_PER_DEG	(2U)	/* SG90 ~0.1 s / 60 deg = 1.7 ms/deg.     */
@@ -76,12 +76,15 @@
 #endif
 
 /* ---------------------------------------------------------------- Scanning */
-/* 65, 75, 85, 95, 105, 115 deg. 10 deg steps are finer than the ~15 deg
+/* 60, 70, ... 120 deg. 10 deg steps are finer than the ~15 deg
    beam, so the coarse scan leaves no blind gaps inside the narrow sweep. */
-#define OA_COARSE_START_DEG	(65U)
+#define OA_COARSE_START_DEG	(60U)
 #define OA_COARSE_STEP_DEG	(10U)
-#define OA_COARSE_COUNT		(6U)
-#define OA_FINE_STEP_DEG	(5U)	/* TUNE: smaller = slower, sharper edges. */
+#define OA_COARSE_COUNT		(7U)
+#define OA_FINE_STEP_DEG	(5U)	/* TUNE: 1 deg was tried: ~5 s per scan,
+					   no better edges (the wide beam blurs
+					   them), and more lone no-echo misses
+					   splitting the obstacle. Back to 5.     */
 #define OA_FINE_MARGIN_DEG	(15U)	/* TUNE: scan this far past coarse hits.  */
 
 #if (OA_COARSE_START_DEG < OA_SERVO_MIN_DEG) || \

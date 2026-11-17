@@ -52,7 +52,7 @@ typedef enum
 {
 	S5_STATE_MONITOR = 0,	/* ping straight ahead every 60 ms   */
 	S5_STATE_WAIT_STOP,	/* asked Mission Control to stop     */
-	S5_STATE_COARSE_SCAN,	/* 6 angles, 65-115 deg (10 deg steps) */
+	S5_STATE_COARSE_SCAN,	/* 7 angles, 60-120 deg (10 deg steps) */
 	S5_STATE_FINE_SCAN,	/* 5 deg steps around the hits       */
 	S5_STATE_PROFILE,	/* closest point, width, clearances  */
 	S5_STATE_PLAN,		/* LEFT/RIGHT/REVERSE/STOP/CONTINUE  */
