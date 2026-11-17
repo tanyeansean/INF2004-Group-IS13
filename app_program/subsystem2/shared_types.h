@@ -123,6 +123,16 @@ typedef enum {
 				   as a front IR sensor sees the line */
 } motor_mode_t;
 
+/* motion_q (IF-10) only: the mode field above is full, so a turn that ends
+   on the line sensors is flagged in the param byte instead. With
+   MCMD_TURN_LEFT / MCMD_TURN_RIGHT, param bit 7 set = "spin until the IR
+   sensor on the turning side sees black", bits 0-6 = the most degrees to
+   turn before giving up. S5 never asks for more than 127, so bit 7 is
+   free. Mission Control replies AVOID_EVT_LINE_FOUND if the sensor saw
+   black, AVOID_EVT_MOVE_DONE if the angle ran out first. */
+#define MCMD_PARAM_TO_LINE	(0x80U)
+#define MCMD_PARAM_VALUE_MASK	(0x7FU)
+
 static inline motor_cmd_msg_t motor_cmd_pack(motor_mode_t mode, uint8_t speed_cms, int8_t param)
 {
 	if (speed_cms > 20U) {

@@ -248,15 +248,36 @@ void profile_build(oa_scan_t const *p_scan, oa_profile_t *p_prof)
 							  : q8_to_cm_field(gap_left);
 	p_prof->right_clear_cm    = (NO_GAP == gap_right) ? (uint8_t)OA_DIST_OUT_OF_RANGE
 							  : q8_to_cm_field(gap_right);
-	p_prof->left_edge_cm      = q8_to_cm(y_left);
-	p_prof->right_edge_cm     = q8_to_cm(y_right);
+	/*
+	 * 7. Edges for the sidestep, with the same beam correction as the
+	 *    width in step 4: each edge moves in by d * tan(half beam). The
+	 *    raw edges were used before, so the sidestep was sized for an
+	 *    obstacle wider than the width it reported, and the car drove
+	 *    out too far. If the correction meets in the middle, both edges
+	 *    sit at the centre. The clearances above keep the raw edges:
+	 *    erring wide there is the safe side.
+	 */
+	{
+		int32_t const	beam = ((int32_t)p_scan->dist_cm[closest] * OA_TAN_HALF_BEAM_Q15)
+				       / Q15_TO_Q8;
+		int32_t		edge_l = y_left - beam;
+		int32_t		edge_r = y_right + beam;
+
+		if (edge_l < edge_r) {
+			edge_l = (y_left + y_right) / 2;
+			edge_r = edge_l;
+		}
+		p_prof->left_edge_cm  = q8_to_cm(edge_l);
+		p_prof->right_edge_cm = q8_to_cm(edge_r);
+	}
 }
 
 obs_plan_t profile_plan(oa_profile_t const *p_prof, uint8_t retries,
 			uint8_t *p_sidestep_cm)
 {
 	uint16_t const	need_cm = OA_CAR_WIDTH_CM + (2U * OA_SIDE_MARGIN_CM);
-	int32_t const	half_cm = (int32_t)((OA_CAR_WIDTH_CM / 2U) + OA_SIDE_MARGIN_CM);
+	int32_t const	half_cm = (int32_t)((OA_CAR_WIDTH_CM / 2U) + OA_SIDE_MARGIN_CM
+					    + OA_SIDESTEP_EXTRA_CM);	/* sidestep only */
 	bool		b_left_ok;
 	bool		b_right_ok;
 	int32_t		step_left;

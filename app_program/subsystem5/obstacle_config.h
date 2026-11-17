@@ -95,6 +95,11 @@
 /* ---------------------------------------------------------------- Planning */
 #define OA_CAR_WIDTH_CM		(15U)	/* MEASURE the real car.                  */
 #define OA_SIDE_MARGIN_CM	(5U)	/* TUNE                                   */
+/* TUNE: extra sideways distance added to every sidestep, on top of
+   half the car + OA_SIDE_MARGIN_CM. The ultrasonic width is only an
+   estimate (wide beam), and the car grazed obstacles with 0 here. Only
+   changes how far the car steps out, not when a side counts as open. */
+#define OA_SIDESTEP_EXTRA_CM	(10U)
 #define OA_MAX_RETRIES		(2U)	/* Reverse-and-rescan attempts (2 bits).  */
 
 /* ---------------------------------------------------------------- Waits */
@@ -112,11 +117,21 @@
    open-loop distance / angle calibration decides how accurate they are. */
 #define OA_REVERSE_CM		(15U)	/* TUNE: back off this far, then rescan.  */
 #define OA_TURN_OUT_DEG		(45U)	/* Leave the line at 45 deg.               */
-/* TUNE: turn back toward the line after passing the obstacle. Steeper
-   than OA_TURN_OUT_DEG so the car reaches the line sooner: at 45 deg it
-   came back too shallow to rejoin in time. Leg 7 turns back the same
-   amount to run along the line again. Must be 1..90. */
-#define OA_TURN_IN_DEG		(60U)
+/* TUNE: turn back toward the line after passing the obstacle. Leg 7
+   turns back the same amount to run along the line again. 45 = the
+   same as OA_TURN_OUT_DEG (was 60 for a while; back to 45). 1..90. */
+#define OA_TURN_IN_DEG		(45U)
+/* How far the front IR line sensors sit ahead of the drive-wheel axle,
+   in cm: about 10, measured by Joe (the two sensors are about 1 cm
+   apart). After the line search finds the line, the car drives this much
+   further so the axle is on the line before it swings round onto it
+   (see oa_state_bypass). 0 = no overrun. */
+#define OA_IR_AHEAD_CM		(10U)
+/* TUNE: lining up with the line (leg 7) spins until the IR sensor on the
+   turning side sees black. Expected: OA_TURN_IN_DEG (90 after a second
+   search). Give up and raise NO_LINE this many degrees past that.
+   90 + this must fit in 7 bits (checked in task_obstacle.c). */
+#define OA_ALIGN_EXTRA_DEG	(30U)
 #define OA_DEFAULT_SIDESTEP_CM	(20U)	/* If the profile gives none (255).        */
 #define OA_PASS_EXTRA_CM	(25U)	/* TUNE: obstacle depth + car length: drive
 					   this far past the obstacle's front.   */

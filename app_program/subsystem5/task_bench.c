@@ -81,7 +81,9 @@ EXPORT void s5_bench_task(INT stacd, void *exinf)
 		if (tk_rcv_mbf(S5_MOTION_MBF, &mv, TMO_POL) == (INT)sizeof(mv)) {
 			tm_printf((UB*)"[S5 bench] move mode=%d param=%d\n",
 				  (INT)motor_cmd_get_mode(mv), (INT)motor_cmd_get_param(mv));
-			reply_bits  = (motor_cmd_get_mode(mv) == MCMD_FWD_TO_LINE)
+			/* FWD_TO_LINE and turn-to-line (param bit 7) end on the line. */
+			reply_bits  = ((motor_cmd_get_mode(mv) == MCMD_FWD_TO_LINE) ||
+				       (((UB)motor_cmd_get_param(mv) & MCMD_PARAM_TO_LINE) != 0U))
 				    ? AVOID_EVT_LINE_FOUND : AVOID_EVT_MOVE_DONE;
 			reply_at_ms = now_ms() + 300U;
 		}

@@ -264,6 +264,15 @@ LOCAL void maneuver_step(void)
 					   failure check. Must stay below S5's
 					   OA_MOVE_TIMEOUT_MS (15000) minus AV_GAP_MS
 					   and loop slack.                          */
+/* Straight moves hold the car straight: the two motors are not equal, so
+   at the same PWM one wheel runs ahead and the car drifts to one side.
+   Every pass the wheel that is ahead (in encoder counts since the move
+   began) is slowed and the other one sped up by 1 PWM per
+   AV_HOLD_COUNTS_PER_PWM counts of difference, up to AV_HOLD_MAX_PWM.
+   12 counts = 1 mm of wheel travel = 0.5 deg of heading on a 110 mm track.
+   TUNE: lower COUNTS_PER_PWM = firmer hold (too low and it wobbles). */
+#define AV_HOLD_COUNTS_PER_PWM	(12)
+#define AV_HOLD_MAX_PWM		(15)
 
 LOCAL BOOL		g_av_settling;	/* OBSTACLE: stopped, waiting to report */
 LOCAL BOOL		g_av_moving;	/* a motion_q move is running */
@@ -273,6 +282,10 @@ LOCAL UB		g_av_param;	/* request param, for the print */
 LOCAL W			g_av_target_um;	/* distance or arc per wheel */
 LOCAL BOOL		g_av_fwd_l;	/* commanded direction per wheel */
 LOCAL BOOL		g_av_fwd_r;
+LOCAL BOOL		g_av_straight;		/* FWD/BWD: hold the two wheels level */
+LOCAL H			g_av_pwm;		/* that move's PWM magnitude */
+LOCAL W			g_av_hold;		/* steering correction last sent, PWM */
+LOCAL BOOL		g_av_turn_to_line;	/* turn ends on the turning-side IR sensor */
 LOCAL W			g_av_start_l;	/* counts at av_begin() */
 LOCAL W			g_av_start_r;
 LOCAL W			g_av_stop_l;	/* counts at av_finish() */
@@ -361,11 +374,53 @@ LOCAL void av_begin(H left, H right, W target_um)
 	g_av_prog_ms_r = g_av_begin_ms;
 	g_av_moving    = TRUE;
 	g_av_pausing   = FALSE;
+	g_av_straight  = (left == right) ? TRUE : FALSE;	/* FWD / BWD */
+	g_av_pwm       = (left < 0) ? (H)-left : left;
+	g_av_hold      = 0;
 	if (target_um <= 0) {
 		av_finish(AVOID_EVT_MOVE_DONE);	/* nothing to drive */
 		return;
 	}
 	motor_set(left, right);
+}
+
+/* Straight moves only: slow the wheel that is ahead, speed up the other.
+   prog_l / prog_r: counts each wheel has moved in its commanded direction.
+   Sends to Motor Control only when the correction changes, so mbf_motor
+   is not flooded every 5 ms pass. */
+LOCAL void av_hold_straight(W prog_l, W prog_r)
+{
+#if ENC_RIGHT_ENABLED
+	W	hold = (prog_l - prog_r) / AV_HOLD_COUNTS_PER_PWM;
+	W	mag_l;
+	W	mag_r;
+
+	if (hold > AV_HOLD_MAX_PWM) {
+		hold = AV_HOLD_MAX_PWM;
+	} else if (hold < -AV_HOLD_MAX_PWM) {
+		hold = -AV_HOLD_MAX_PWM;
+	} else {
+		/* In range. */
+	}
+	if (hold == g_av_hold) {
+		return;
+	}
+	g_av_hold = hold;
+
+	mag_l = (W)g_av_pwm - hold;	/* left ahead -> hold > 0 -> left slower */
+	mag_r = (W)g_av_pwm + hold;
+	mag_l = (mag_l < 0) ? 0 : mag_l;
+	mag_r = (mag_r < 0) ? 0 : mag_r;
+
+	if (g_av_fwd_l) {
+		motor_set((H)mag_l, (H)mag_r);
+	} else {
+		motor_set((H)-mag_l, (H)-mag_r);
+	}
+#else
+	(void)prog_l;		/* right encoder off (UART build): nothing to compare */
+	(void)prog_r;
+#endif
 }
 
 /* Counts a wheel has moved in its commanded direction since av_begin(). */
@@ -497,17 +552,24 @@ LOCAL void on_motion(motor_cmd_msg_t m)
 {
 	motor_mode_t const	mode  = motor_cmd_get_mode(m);
 	UW const		param = (UW)(UB)motor_cmd_get_param(m);	/* 0..255 */
+	BOOL const		b_turn = ((mode == MCMD_TURN_LEFT) || (mode == MCMD_TURN_RIGHT))
+				       ? TRUE : FALSE;
+	BOOL const		b_turn_to_line = (b_turn && ((param & MCMD_PARAM_TO_LINE) != 0U))
+					       ? TRUE : FALSE;
+	UW const		deg = b_turn_to_line ? (param & MCMD_PARAM_VALUE_MASK) : param;
 
 	g_av_heard_ms = now_ms();
 
 	if (g_mode != CAR_AVOID) {
 		/* Not avoiding (idle bench test): move nothing, answer now. */
-		av_reply((mode == MCMD_FWD_TO_LINE) ? AVOID_EVT_LINE_FOUND : AVOID_EVT_MOVE_DONE);
+		av_reply(((mode == MCMD_FWD_TO_LINE) || b_turn_to_line)
+			 ? AVOID_EVT_LINE_FOUND : AVOID_EVT_MOVE_DONE);
 		return;
 	}
 
-	g_av_param = (UB)param;
-	g_av_move = mode;
+	g_av_param        = (UB)(b_turn ? deg : param);
+	g_av_move         = mode;
+	g_av_turn_to_line = b_turn_to_line;
 	switch (mode) {
 	case MCMD_FWD_DIST:
 	case MCMD_FWD_TO_LINE:
@@ -518,12 +580,12 @@ LOCAL void on_motion(motor_cmd_msg_t m)
 		av_begin((H)-AV_DRIVE_PWM, (H)-AV_DRIVE_PWM, (W)(param * AV_UM_PER_CM));
 		break;
 	case MCMD_TURN_LEFT:		/* same wheel signs as maneuver_step() */
-		av_begin((H)-AV_TURN_PWM, AV_TURN_PWM, (W)AV_TURN_ARC_UM(param));
-		s1_post_state(ROBOT_AVOIDING);
+		av_begin((H)-AV_TURN_PWM, AV_TURN_PWM, (W)AV_TURN_ARC_UM(deg));
+		s1_post_state(b_turn_to_line ? ROBOT_LINE_RECOVERY : ROBOT_AVOIDING);
 		break;
 	case MCMD_TURN_RIGHT:
-		av_begin(AV_TURN_PWM, (H)-AV_TURN_PWM, (W)AV_TURN_ARC_UM(param));
-		s1_post_state(ROBOT_AVOIDING);
+		av_begin(AV_TURN_PWM, (H)-AV_TURN_PWM, (W)AV_TURN_ARC_UM(deg));
+		s1_post_state(b_turn_to_line ? ROBOT_LINE_RECOVERY : ROBOT_AVOIDING);
 		break;
 	case MCMD_STOP:
 	default:			/* LINE_STEER / U_TURN: not used by S5 */
@@ -531,6 +593,23 @@ LOCAL void on_motion(motor_cmd_msg_t m)
 		av_reply(AVOID_EVT_MOVE_DONE);
 		break;
 	}
+}
+
+/* A running move that ends on the IR line sensors: FWD_TO_LINE on either
+   sensor; a turn-to-line on the sensor on the turning side (the one that
+   reaches the line first as the car swings round to run along it). */
+LOCAL BOOL av_line_seen(void)
+{
+	if (g_av_move == MCMD_FWD_TO_LINE) {
+		return (g_lb || g_rb) ? TRUE : FALSE;
+	}
+	if (g_av_turn_to_line) {
+		if (g_av_move == MCMD_TURN_LEFT) {
+			return g_lb ? TRUE : FALSE;
+		}
+		return g_rb ? TRUE : FALSE;
+	}
+	return FALSE;
 }
 
 /* Advance the running move / pause / settle. Called every pass. */
@@ -553,7 +632,7 @@ LOCAL void avoid_step(void)
 		}
 	} else if (g_av_moving) {
 		t = now_ms();
-		if ((g_av_move == MCMD_FWD_TO_LINE) && (g_lb || g_rb)) {
+		if (av_line_seen()) {
 			av_finish(AVOID_EVT_LINE_FOUND);
 		} else {
 			drv_encoder_read(&cl, &cr);
@@ -569,8 +648,10 @@ LOCAL void avoid_step(void)
 #endif
 			} else if ((t - g_av_begin_ms) >= AV_MOVE_CAP_MS) {
 				av_fail(cl, cr, "move too long");
+			} else if (g_av_straight) {
+				av_hold_straight(pl, pr);	/* still moving: keep it straight */
 			} else {
-				/* still moving */
+				/* still moving (spin) */
 			}
 		}
 	} else if (g_av_pausing) {

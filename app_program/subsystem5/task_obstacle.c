@@ -374,9 +374,9 @@ LOCAL const char * const k_dbg_move[] = { "STOP", "STEER", "FWD", "BWD", "TURN_L
  * ABORT is not cleared here: one that arrives between two moves must still
  * end the bypass. oa_request() clears it when a new avoid starts.
  */
-LOCAL oa_move_result_t oa_move(motor_mode_t mode, UB param, BOOL b_watch)
+LOCAL oa_move_result_t oa_move_raw(motor_mode_t mode, UB param, BOOL b_watch)
 {
-	motor_cmd_msg_t const	m = motor_cmd_pack(mode, 0U, (int8_t)oa_clamp_cm(param));
+	motor_cmd_msg_t const	m = motor_cmd_pack(mode, 0U, (int8_t)param);
 	UW const		start_us = s5_time_us();
 	UINT const		bits = AVOID_EVT_MOVE_DONE | AVOID_EVT_LINE_FOUND |
 				       AVOID_EVT_ABORT;
@@ -385,7 +385,9 @@ LOCAL oa_move_result_t oa_move(motor_mode_t mode, UB param, BOOL b_watch)
 	ER			er;
 
 #if OA_DEBUG
-	tm_printf((UB *)"[S5 dbg] move %s %u\n", k_dbg_move[(UINT)mode & 7U], (UINT)param);
+	tm_printf((UB *)"[S5 dbg] move %s %u%s\n", k_dbg_move[(UINT)mode & 7U],
+		  (UINT)(param & MCMD_PARAM_VALUE_MASK),
+		  ((param & MCMD_PARAM_TO_LINE) != 0U) ? " (until the line)" : "");
 #endif
 	(void)tk_clr_flg(flg_avoid, ~(AVOID_EVT_MOVE_DONE | AVOID_EVT_LINE_FOUND));
 	if (tk_snd_mbf(S5_MOTION_MBF, &m, (INT)sizeof(m), TMO_POL) != E_OK) {
@@ -419,6 +421,25 @@ LOCAL oa_move_result_t oa_move(motor_mode_t mode, UB param, BOOL b_watch)
 			return OA_MOVE_TIMEOUT;
 		}
 	}
+}
+
+/* A distance (cm) or angle (deg) move: the value is clamped to what the
+   8-bit signed motion_q param can carry. */
+LOCAL oa_move_result_t oa_move(motor_mode_t mode, UB param, BOOL b_watch)
+{
+	return oa_move_raw(mode, oa_clamp_cm(param), b_watch);
+}
+
+/* Spin (MCMD_TURN_LEFT / _RIGHT) until the IR sensor on the turning side
+   sees black, or max_deg have been turned (shared_types.h,
+   MCMD_PARAM_TO_LINE). OA_MOVE_LINE = it saw the line, OA_MOVE_DONE = the
+   angle ran out first. */
+LOCAL oa_move_result_t oa_turn_to_line(motor_mode_t mode, UB max_deg)
+{
+	UB const deg = (max_deg > (UB)MCMD_PARAM_VALUE_MASK) ? (UB)MCMD_PARAM_VALUE_MASK
+							      : max_deg;
+
+	return oa_move_raw(mode, (UB)(MCMD_PARAM_TO_LINE | deg), FALSE);
 }
 
 /* Next state after a move that did not end as planned. */
@@ -589,17 +610,22 @@ LOCAL s5_state_t oa_state_plan(void)
  *   2 forward sidestep * sqrt(2)      ends sidestep cm off the line
  *   3 turn OA_TURN_OUT_DEG back       parallel to the line
  *   4 forward to past the obstacle    (closest - sidestep) + OA_PASS_EXTRA_CM
- *   5 turn OA_TURN_IN_DEG back toward the line (steeper than 45: a
- *     shallow return did not reach the line in time)
- *   6 forward until a front IR sensor sees the line (up to 2x leg 2)
- *   7 turn OA_TURN_IN_DEG toward D    heading along the line again
+ *   5 turn OA_TURN_IN_DEG back toward the line
+ *   6 forward until a front IR sensor sees the line (up to 2x leg 2),
+ *     then OA_IR_AHEAD_CM more so the wheel axle is on the line
+ *   7 spin toward D until the IR sensor on that side sees the line
+ *     (at most OA_TURN_IN_DEG + OA_ALIGN_EXTRA_DEG), then line following
+ *     takes over and centres the line between the sensors
  * then CLEAR hands the car back to line following. If leg 6 misses the
  * line, turn the rest of the way to square to the line (90 - TURN_IN)
- * and search once more for OA_SEEK_MAX_CM; leg 7 is then 90 deg.
+ * and search once more for OA_SEEK_MAX_CM; leg 7 then expects 90 deg.
  * Forward legs keep pinging ahead.
  */
 #if (OA_TURN_IN_DEG < 1U) || (OA_TURN_IN_DEG > 90U)
 #error "OA_TURN_IN_DEG must be 1..90: the second search squares up with 90 - OA_TURN_IN_DEG."
+#endif
+#if ((90U + OA_ALIGN_EXTRA_DEG) > MCMD_PARAM_VALUE_MASK)
+#error "90 + OA_ALIGN_EXTRA_DEG must fit in 7 bits (motion_q turn-to-line param)."
 #endif
 LOCAL s5_state_t oa_state_bypass(void)
 {
@@ -656,9 +682,35 @@ LOCAL s5_state_t oa_state_bypass(void)
 		return oa_move_failed(r);
 	}
 
-	/* On the line: turn back along it and hand control back. */
-	r = oa_move(turn_out, align_deg, FALSE);
-	if (r != OA_MOVE_DONE) {
+	/* The front IR sensors found the line, but the car spins about its
+	   wheel axle, which is still OA_IR_AHEAD_CM short of it. Drive that
+	   far on, so the turn below pivots ON the line and leaves the car on
+	   it rather than beside it (which made line following weave). The
+	   overrun is the same at any approach angle. */
+	if (OA_IR_AHEAD_CM > 0U) {
+		r = oa_move(MCMD_FWD_DIST, (UB)OA_IR_AHEAD_CM, TRUE);
+		if (r != OA_MOVE_DONE) {
+			return oa_move_failed(r);
+		}
+	}
+
+	/* On the line, axle on it: swing round to run along it, stopping as
+	   soon as the IR sensor on the turning side reaches the line (about 3
+	   deg short of straight with the sensors 10 cm ahead and 1 cm apart),
+	   then hand over to line following, which centres the line between
+	   the sensors. Ending on the sensor instead of a fixed angle means
+	   tyre slip in the spin does not matter. If the sensor never sees
+	   black within OA_ALIGN_EXTRA_DEG past the expected angle, the car
+	   has lost the line: NO_LINE fault rather than drive off on a guess. */
+	r = oa_turn_to_line(turn_out, (UB)(align_deg + OA_ALIGN_EXTRA_DEG));
+	if (r == OA_MOVE_DONE) {
+#if OA_DEBUG
+		tm_printf((UB *)"[S5 dbg] FAULT: line sensor never saw the line while lining up\n");
+#endif
+		oa_set_fault(S5_FAULT_NO_LINE);
+		return S5_STATE_FAULT;
+	}
+	if (r != OA_MOVE_LINE) {
 		return oa_move_failed(r);
 	}
 	oa_send(OBS_MSG_CLEAR, OBS_PLAN_CONTINUE);
