@@ -7,8 +7,9 @@
  *	  both white, <= 80 ms since one sensor last saw the line
  *	                      -> light steer, +-16 (bend recovery)
  *	  one sensor black    -> steer up to +-36, scaled by err/14
- *	  both black >= 30 ms -> junction: STOP (JUNCTION_STOPS = 1), or the
- *	                         timed barcode turn (JUNCTION_STOPS = 0)
+ *	  both black          -> junction (rising edge): stop, then the barcode
+ *	                         move on wheel encoders, a rescan, or stay
+ *	                         stopped (see "Junction moves" below)
  *	  lost (uncalibrated) -> stop
  *
  *	Runs once per line_err_q message (every 5 ms, like the bare-metal
@@ -49,16 +50,45 @@
 #define STEER_INVERT		0	/* verified on car: right black -> turn right */
 #endif
 #ifndef JUNCTION_STOPS
-#define JUNCTION_STOPS		1	/* 1 = stop at a junction, no barcode turn */
+#define JUNCTION_STOPS		0	/* 0 = barcode move at a junction (below);
+					   1 = stop at every junction, no move */
 #endif
 #ifndef PWM_AT_SPEED_MAX
 #define PWM_AT_SPEED_MAX	85	/* PWM for "speed 20" (not yet measured) */
 #endif
-#define TURN_PWM		130
-#define TURN_90_MS		450U
-#define TURN_180_MS		900U
-#define CROSS_MS		300U
 #define MOTOR_LEFT_IS_M1	1
+
+/* ---- Junction moves (wheel encoders) ----
+ * Junction = rising edge of "both front sensors black". The car stops,
+ * then by the pending barcode letter and the MQTT map:
+ *   LEFT / RIGHT : forward JN_CREEP_MM (wheels onto the crossing), spin 90
+ *   FORWARD      : forward JN_CREEP_MM, then line following again
+ *   U-TURN       : forward JN_CREEP_MM, spin 180 (to the right)
+ *   letter not in the map, or no barcode read at all : stop (wait for START)
+ *   only an unreadable barcode since the last junction : reverse past the
+ *     barcode and line-follow back over it (a rescan), up to JN_RESCAN_MAX
+ *     times, then stop.
+ * Every move ends on encoder distance; a stalled wheel or the time cap
+ * stops the car (ROBOT_ERROR). */
+#define JN_CREEP_MM		120	/* front IR sensors to the wheel axle (measured) */
+#define JN_DRIVE_PWM		45	/* creep and rescan reverse (= line-follow base) */
+#define JN_TURN_PWM		80	/* spins: same as the obstacle spins (AV_TURN_PWM) */
+#define JN_TRACK_MM		110U	/* tyre centre to tyre centre (Jin, 13 Nov) */
+#define JN_PI_360_E7		87266U	/* pi / 360 x 1e7 */
+/* arc per wheel for an on-the-spot spin, um: 90 -> 86393, 180 -> 172786 */
+#define JN_ARC_UM(deg)		((W)(((UW)(deg) * JN_TRACK_MM * JN_PI_360_E7) / 10000U))
+#define JN_PAUSE_MS		200U	/* still before and after a move */
+#define JN_STALL_MS		500U	/* a wheel with no progress this long = stalled */
+#define JN_STALL_COUNTS		12	/* about 1 mm of wheel travel */
+#define JN_MOVE_CAP_MS		8000U	/* backstop for one move */
+#define JN_HOLD_COUNTS_PER_PWM	12	/* straight moves: wheel-difference correction */
+#define JN_HOLD_MAX_PWM		15
+#define JN_RESCAN_MAX		3U	/* rescans per junction */
+#define JN_RESCAN_MARGIN_MM	60	/* run-up: reverse this far past the first bar */
+#define JN_RESCAN_DEFAULT_MM	250	/* reverse when the barcode position is unknown */
+#define JN_RESCAN_MAX_MM	600	/* never reverse further than this */
+#define JN_BAR_MIN_EDGES	10U	/* fewer edges = flicker, not a barcode attempt */
+#define JN_BAR_GAP_MS		500U	/* GP7 quiet this long: next edge = new pass */
 
 #define S2_LINE_WAIT_MS		20
 #define S2_STATUS_MS		500U
@@ -95,11 +125,39 @@ LOCAL H			g_base_m2 = BASE_PWM_M2;
 LOCAL H			g_out_l, g_out_r;
 LOCAL UW		g_hold_until_ms;	/* end of the steer-hold window (0 = none) */
 LOCAL UB		g_lb, g_rb;
-LOCAL UW		g_man_end_ms;
-LOCAL H			g_man_left, g_man_right;
-LOCAL UB		g_man_phase;
-LOCAL UB		g_man_move;
 LOCAL nav_state_t	g_nav;
+
+/* Junction move state (CAR_MANEUVER): this task only. */
+typedef enum {
+	JN_NONE = 0, JN_PAUSE_IN, JN_CREEP, JN_TURN, JN_REVERSE, JN_PAUSE_OUT
+} jn_phase_t;
+LOCAL jn_phase_t	g_jn_phase = JN_NONE;
+LOCAL UB		g_jn_move;		/* BARCMD_* */
+LOCAL BOOL		g_jn_rescan;		/* this move is a rescan reverse */
+LOCAL W			g_jn_rescan_um;		/* how far that reverse goes */
+LOCAL UINT		g_jn_rescans;		/* rescans done at this junction */
+LOCAL UB		g_jn_prev;		/* junction flag, previous message */
+LOCAL UW		g_jn_until_ms;		/* end of a pause */
+LOCAL W			g_jn_target_um;		/* distance, or arc per wheel */
+LOCAL W			g_jn_start_l, g_jn_start_r;
+LOCAL BOOL		g_jn_fwd_l, g_jn_fwd_r;
+LOCAL BOOL		g_jn_straight;
+LOCAL H			g_jn_pwm;
+LOCAL W			g_jn_hold;
+LOCAL W			g_jn_best_l, g_jn_best_r;
+LOCAL UW		g_jn_prog_ms_l, g_jn_prog_ms_r;
+LOCAL UW		g_jn_begin_ms;
+
+/* Barcode passes, from S3's queued-edge counter + the encoders. */
+LOCAL UW		g_bar_last_pushed;
+LOCAL UW		g_bar_last_edge_ms;
+LOCAL UW		g_bar_pass_edges;	/* edges in the current pass */
+LOCAL W			g_bar_pass_min_um;	/* rearmost odometer reading at an edge */
+LOCAL BOOL		g_bar_pass_seen = FALSE;
+LOCAL BOOL		g_bar_unreadable = FALSE; /* real INVALID since the last junction */
+LOCAL W			g_bar_unreadable_min_um;
+
+LOCAL const char * const k_jn_move[BARCMD_COUNT] = { "LEFT", "RIGHT", "FORWARD", "U-TURN" };
 LOCAL UW		g_motor_dropped = 0U;
 
 LOCAL UW now_ms(void)
@@ -131,6 +189,7 @@ LOCAL void car_stop(robot_state_t why)
 	}
 #endif
 	g_mode = CAR_IDLE;
+	g_jn_phase = JN_NONE;
 	g_hold_until_ms = 0U;
 	s1_post_state(why);
 }
@@ -164,51 +223,322 @@ LOCAL void car_start(void)
 	   lifted / overturned bit (bit 2), which only Mission Control clears. */
 	(void)tk_clr_flg(flg_faults, ~(UINT)FAULT_BIT_COLLISION);
 	s4_new_run();
+	g_jn_rescans = 0U;
 	car_resume_follow();
 	tm_printf((UB *)"[car] START (base PWM M1=%d M2=%d)\n", g_base_m1, g_base_m2);
 }
 
-LOCAL void maneuver_begin(UB move)
+/* =====================================================================
+ *  Junction moves: stop, then creep / spin / rescan-reverse on encoders.
+ * ===================================================================== */
+LOCAL telem_move_t to_telem_move(UB barcmd);
+
+/* Odometer: mean of both wheels' counts (left only without the right
+   encoder), in um. + = forward. */
+LOCAL W odo_um(void)
 {
-	g_mode       = CAR_MANEUVER;
-	g_man_move   = move;
-	g_man_phase  = 0U;
-	g_man_left   = BASE_LEFT;
-	g_man_right  = BASE_RIGHT;
-	g_man_end_ms = now_ms() + CROSS_MS;
-	motor_set(g_man_left, g_man_right);
-	s1_post_state(ROBOT_TURNING);
+	W l, r;
+
+	drv_encoder_read(&l, &r);
+#if ENC_RIGHT_ENABLED
+	return (s2_counts_to_um(l) + s2_counts_to_um(r)) / 2;
+#else
+	(void)r;
+	return s2_counts_to_um(l);
+#endif
 }
 
-LOCAL void maneuver_step(void)
+LOCAL W jn_progress(W now, W start, BOOL fwd)
 {
-	if ((W)(now_ms() - g_man_end_ms) < 0) {
+	W d = fwd ? (now - start) : (start - now);
+
+	return (d < 0) ? 0 : d;
+}
+
+LOCAL BOOL jn_stalled(W prog, W *p_best, UW *p_ms, UW t)
+{
+	if (prog >= (*p_best + JN_STALL_COUNTS)) {
+		*p_best = prog;
+		*p_ms   = t;
+		return FALSE;
+	}
+	return ((t - *p_ms) >= JN_STALL_MS) ? TRUE : FALSE;
+}
+
+/* Start one encoder move: constant PWM until target_um (distance, or the
+   arc per wheel for a spin). */
+LOCAL void jn_move(jn_phase_t phase, H left, H right, W target_um)
+{
+	drv_encoder_read(&g_jn_start_l, &g_jn_start_r);
+	g_jn_phase     = phase;
+	g_jn_fwd_l     = (left >= 0) ? TRUE : FALSE;
+	g_jn_fwd_r     = (right >= 0) ? TRUE : FALSE;
+	g_jn_straight  = (left == right) ? TRUE : FALSE;
+	g_jn_pwm       = (left < 0) ? (H)-left : left;
+	g_jn_hold      = 0;
+	g_jn_target_um = target_um;
+	g_jn_begin_ms  = now_ms();
+	g_jn_best_l    = 0;
+	g_jn_best_r    = 0;
+	g_jn_prog_ms_l = g_jn_begin_ms;
+	g_jn_prog_ms_r = g_jn_begin_ms;
+	motor_set(left, right);
+}
+
+LOCAL void jn_pause(jn_phase_t phase)
+{
+	motor_set(0, 0);
+	g_jn_phase    = phase;
+	g_jn_until_ms = now_ms() + JN_PAUSE_MS;
+}
+
+/* Straight moves: slow the wheel that is ahead (same rule as the
+   obstacle moves). */
+LOCAL void jn_hold_straight(W prog_l, W prog_r)
+{
+#if ENC_RIGHT_ENABLED
+	W hold = (prog_l - prog_r) / JN_HOLD_COUNTS_PER_PWM;
+	W mag_l, mag_r;
+
+	if (hold > JN_HOLD_MAX_PWM) {
+		hold = JN_HOLD_MAX_PWM;
+	} else if (hold < -JN_HOLD_MAX_PWM) {
+		hold = -JN_HOLD_MAX_PWM;
+	} else {
+		/* in range */
+	}
+	if (hold == g_jn_hold) {
 		return;
 	}
-	if ((g_man_phase == 0U) && (g_man_move != BARCMD_STRAIGHT)) {
-		g_man_phase = 1U;
-		switch (g_man_move) {
-		case BARCMD_LEFT:
-			g_man_left = (H)-TURN_PWM; g_man_right = TURN_PWM;
-			g_man_end_ms = now_ms() + TURN_90_MS;
-			break;
-		case BARCMD_RIGHT:
-			g_man_left = TURN_PWM; g_man_right = (H)-TURN_PWM;
-			g_man_end_ms = now_ms() + TURN_90_MS;
-			break;
-		default: /* BARCMD_U_TURN */
-			g_man_left = TURN_PWM; g_man_right = (H)-TURN_PWM;
-			g_man_end_ms = now_ms() + TURN_180_MS;
-			break;
-		}
-		motor_set(g_man_left, g_man_right);
-		return;
+	g_jn_hold = hold;
+	mag_l = (W)g_jn_pwm - hold;
+	mag_r = (W)g_jn_pwm + hold;
+	mag_l = (mag_l < 0) ? 0 : mag_l;
+	mag_r = (mag_r < 0) ? 0 : mag_r;
+	if (g_jn_fwd_l) {
+		motor_set((H)mag_l, (H)mag_r);
+	} else {
+		motor_set((H)-mag_l, (H)-mag_r);
 	}
-	/* done: back to line following */
+#else
+	(void)prog_l;
+	(void)prog_r;
+#endif
+}
+
+/* Back to line following after a move; keeps the rescan count. */
+LOCAL void jn_resume(void)
+{
+	g_jn_phase = JN_NONE;
 	s3_request_line_reset();
 	g_hold_until_ms = 0U;
 	g_mode = CAR_FOLLOW;
 	s1_post_state(ROBOT_LINE_FOLLOW);
+}
+
+/* Barcode move: stop, then creep onto the crossing (and spin). */
+LOCAL void jn_begin_move(UB move)
+{
+	g_mode      = CAR_MANEUVER;
+	g_jn_move   = move;
+	g_jn_rescan = FALSE;
+	g_jn_rescans = 0U;
+	jn_pause(JN_PAUSE_IN);
+	s1_post_state(ROBOT_TURNING);
+}
+
+/* Rescan: stop, reverse past the barcode, then line-follow back over it. */
+LOCAL void jn_begin_rescan(W reverse_um)
+{
+	g_mode         = CAR_MANEUVER;
+	g_jn_rescan    = TRUE;
+	g_jn_rescan_um = reverse_um;
+	jn_pause(JN_PAUSE_IN);
+	s1_post_state(ROBOT_LINE_RECOVERY);
+}
+
+LOCAL void jn_fail(const char *why)
+{
+	W l, r;
+
+	drv_encoder_read(&l, &r);
+	tm_printf((UB *)"[jn] move FAILED: %s (L=%dmm R=%dmm of %dmm, %ums) - stopped\n", why,
+		  (INT)(s2_counts_to_um(l - g_jn_start_l) / 1000),
+		  (INT)(s2_counts_to_um(r - g_jn_start_r) / 1000),
+		  (INT)(g_jn_target_um / 1000), (UINT)(now_ms() - g_jn_begin_ms));
+	car_stop(ROBOT_ERROR);
+}
+
+/* What to do after the creep: spin, or (FORWARD) carry on. */
+LOCAL void jn_after_creep(void)
+{
+	switch (g_jn_move) {
+	case BARCMD_LEFT:
+		jn_move(JN_TURN, (H)-JN_TURN_PWM, JN_TURN_PWM, JN_ARC_UM(90));
+		break;
+	case BARCMD_RIGHT:
+		jn_move(JN_TURN, JN_TURN_PWM, (H)-JN_TURN_PWM, JN_ARC_UM(90));
+		break;
+	case BARCMD_U_TURN:
+		jn_move(JN_TURN, JN_TURN_PWM, (H)-JN_TURN_PWM, JN_ARC_UM(180));
+		break;
+	default:	/* FORWARD */
+		jn_pause(JN_PAUSE_OUT);
+		break;
+	}
+}
+
+/* Advance the junction move. Called every pass while CAR_MANEUVER. */
+LOCAL void maneuver_step(void)
+{
+	UW t = now_ms();
+	W  cl, cr, pl, pr, done;
+
+	switch (g_jn_phase) {
+	case JN_PAUSE_IN:
+		if ((W)(t - g_jn_until_ms) >= 0) {
+			if (g_jn_rescan) {
+				jn_move(JN_REVERSE, (H)-JN_DRIVE_PWM, (H)-JN_DRIVE_PWM,
+					g_jn_rescan_um);
+			} else {
+				jn_move(JN_CREEP, JN_DRIVE_PWM, JN_DRIVE_PWM,
+					(W)JN_CREEP_MM * 1000);
+			}
+		}
+		break;
+
+	case JN_CREEP:
+	case JN_TURN:
+	case JN_REVERSE:
+		drv_encoder_read(&cl, &cr);
+		pl = jn_progress(cl, g_jn_start_l, g_jn_fwd_l);
+		pr = jn_progress(cr, g_jn_start_r, g_jn_fwd_r);
+#if ENC_RIGHT_ENABLED
+		done = (s2_counts_to_um(pl) + s2_counts_to_um(pr)) / 2;
+#else
+		done = s2_counts_to_um(pl);
+#endif
+		if (done >= g_jn_target_um) {
+			tm_printf((UB *)"[jn] %s done: L=%dmm R=%dmm (target %dmm) %ums\n",
+				  (g_jn_phase == JN_CREEP) ? "creep" :
+				  (g_jn_phase == JN_TURN) ? "spin" : "reverse",
+				  (INT)(s2_counts_to_um(pl) / 1000), (INT)(s2_counts_to_um(pr) / 1000),
+				  (INT)(g_jn_target_um / 1000), (UINT)(t - g_jn_begin_ms));
+			if (g_jn_phase == JN_CREEP) {
+				motor_set(0, 0);
+				jn_after_creep();
+			} else {
+				jn_pause(JN_PAUSE_OUT);
+			}
+		} else if (jn_stalled(pl, &g_jn_best_l, &g_jn_prog_ms_l, t)) {
+			jn_fail("left wheel stalled");
+#if ENC_RIGHT_ENABLED
+		} else if (jn_stalled(pr, &g_jn_best_r, &g_jn_prog_ms_r, t)) {
+			jn_fail("right wheel stalled");
+#endif
+		} else if ((t - g_jn_begin_ms) >= JN_MOVE_CAP_MS) {
+			jn_fail("move took too long");
+		} else if (g_jn_straight) {
+			jn_hold_straight(pl, pr);
+		} else {
+			/* spinning */
+		}
+		break;
+
+	case JN_PAUSE_OUT:
+		if ((W)(t - g_jn_until_ms) >= 0) {
+			jn_resume();
+		}
+		break;
+
+	default:
+		jn_resume();	/* no move set up: never sit in MANEUVER */
+		break;
+	}
+}
+
+/* Rising edge of the junction flag while following: decide. */
+LOCAL void on_junction(void)
+{
+	UB	let = 0U;
+	UB	mv  = 0U;
+	W	rev_um;
+
+	if (nav_has_pending(&g_nav, &let)) {
+		BOOL mapped = nav_map_lookup(nav_map_snapshot(&g_nav_map), let, &mv)
+			      ? TRUE : FALSE;
+
+		nav_reset(&g_nav);		/* each barcode executes once */
+		g_bar_unreadable = FALSE;
+		s1_post_junction((char)('A' + let),
+				 mapped ? to_telem_move(mv) : TELEM_MOVE_UNMAPPED);
+		if (!mapped) {
+			car_stop(ROBOT_STOPPED);
+			g_jn_rescans = 0U;
+			tm_printf((UB *)"[jn] junction: '%c' is not in the map - stopped\n",
+				  'A' + let);
+		} else if (JUNCTION_STOPS) {
+			car_stop(ROBOT_STOPPED);
+			tm_printf((UB *)"[jn] junction: '%c' -> %s (JUNCTION_STOPS=1: stopped)\n",
+				  'A' + let, k_jn_move[mv & 3U]);
+		} else {
+			tm_printf((UB *)"[jn] junction: '%c' -> %s\n", 'A' + let,
+				  k_jn_move[mv & 3U]);
+			jn_begin_move(mv);
+		}
+		return;
+	}
+
+	if (g_bar_unreadable && (g_jn_rescans < JN_RESCAN_MAX) && !JUNCTION_STOPS) {
+		g_jn_rescans++;
+		rev_um = (odo_um() - g_bar_unreadable_min_um) + ((W)JN_RESCAN_MARGIN_MM * 1000);
+		if ((rev_um <= ((W)JN_RESCAN_MARGIN_MM * 1000)) ||
+		    (rev_um > ((W)JN_RESCAN_MAX_MM * 1000))) {
+			rev_um = (W)JN_RESCAN_DEFAULT_MM * 1000;
+		}
+		g_bar_unreadable = FALSE;
+		tm_printf((UB *)"[jn] junction: barcode unreadable - rescan %u of %u, reversing %dmm\n",
+			  g_jn_rescans, (UINT)JN_RESCAN_MAX, (INT)(rev_um / 1000));
+		jn_begin_rescan(rev_um);
+		return;
+	}
+
+	car_stop(ROBOT_STOPPED);
+	if (g_bar_unreadable) {
+		tm_printf((UB *)"[jn] junction: barcode still unreadable after %u rescans - stopped\n",
+			  g_jn_rescans);
+	} else {
+		tm_printf((UB *)"[jn] junction: no barcode read - stopped\n");
+	}
+	g_bar_unreadable = FALSE;
+	g_jn_rescans = 0U;
+}
+
+/* Track barcode passes from S3's queued-edge counter: how many edges, and
+   where (odometer) the rearmost one was, so a rescan knows how far to
+   reverse. Called every pass. */
+LOCAL void bar_track_edges(UW t)
+{
+	UB	src;
+	UW	isr, samp, pushed, raw;
+	W	odo;
+
+	s3_barcode_diag(&src, &isr, &samp, &pushed, &raw);
+	if (pushed == g_bar_last_pushed) {
+		return;
+	}
+	odo = odo_um();
+	if (!g_bar_pass_seen || ((t - g_bar_last_edge_ms) > JN_BAR_GAP_MS)) {
+		g_bar_pass_edges  = 0U;
+		g_bar_pass_min_um = odo;
+		g_bar_pass_seen   = TRUE;
+	}
+	g_bar_pass_edges  += pushed - g_bar_last_pushed;
+	g_bar_last_pushed  = pushed;
+	g_bar_last_edge_ms = t;
+	if (odo < g_bar_pass_min_um) {
+		g_bar_pass_min_um = odo;
+	}
 }
 
 #if APP_WITH_S5
@@ -774,9 +1104,16 @@ LOCAL void on_barcode(barcode_t res)
 		tm_printf((UB *)"[bar] VALID '%c'%s\n", barcode_get_char(res),
 			  mapped ? "" : " (not in map)");
 		nav_on_barcode(&g_nav, res);
+		g_bar_unreadable = FALSE;	/* a good read wins */
 		s1_post_barcode(barcode_get_char(res),
 				mapped ? to_telem_move(mv) : TELEM_MOVE_UNMAPPED);
 	} else {
+		/* A real attempt (enough edges in this pass), not flicker:
+		   the next junction may rescan it. */
+		if (g_bar_pass_seen && (g_bar_pass_edges >= JN_BAR_MIN_EDGES)) {
+			g_bar_unreadable        = TRUE;
+			g_bar_unreadable_min_um = g_bar_pass_min_um;
+		}
 		s1_post_barcode('?', TELEM_MOVE_UNMAPPED);	/* printed by S3 */
 	}
 }
@@ -788,8 +1125,6 @@ LOCAL void on_line(line_err_t le)
 	INT		err   = line_err_get_error(le);
 	UB		l_blk = line_err_get_left_black(le);
 	UB		r_blk = line_err_get_right_black(le);
-	UB		mv = 0U, let = 0U;
-	UB		ev;
 
 	g_lb = l_blk;
 	g_rb = r_blk;
@@ -799,19 +1134,15 @@ LOCAL void on_line(line_err_t le)
 			     (H)(err / 8), line_err_get_lost(le) ? FALSE : TRUE);
 	}
 
-	/* junction trigger: feed EVERY line message */
-	ev = nav_on_line(&g_nav, le, nav_map_snapshot(&g_nav_map), &mv, &let);
-	if (ev == NAV_EVT_MOVE) {
-		tm_printf((UB *)"[nav] junction: '%c' -> move %u\n", 'A' + let, (UINT)mv);
-		s1_post_junction((char)('A' + let), to_telem_move(mv));
-		if ((g_mode == CAR_FOLLOW) && !JUNCTION_STOPS) {
-			maneuver_begin(mv);
+	/* junction: rising edge of "both black", acted on only while following */
+	{
+		UB jn = line_err_get_junction(le);
+		UB rising = (jn && !g_jn_prev) ? 1U : 0U;
+
+		g_jn_prev = jn;
+		if (rising && (g_mode == CAR_FOLLOW) && !line_err_get_lost(le)) {
+			on_junction();
 		}
-	} else if (ev == NAV_EVT_UNMAPPED) {
-		tm_printf((UB *)"[nav] junction: '%c' has NO mapping - driving on\n", 'A' + let);
-		s1_post_junction((char)('A' + let), TELEM_MOVE_UNMAPPED);
-	} else {
-		/* keep going */
 	}
 
 	if (g_mode == CAR_FOLLOW) {
@@ -819,9 +1150,6 @@ LOCAL void on_line(line_err_t le)
 		if (line_err_get_lost(le)) {
 			car_stop(ROBOT_LINE_RECOVERY);
 			tm_printf((UB *)"[car] line data unusable - stopped\n");
-		} else if (line_err_get_junction(le) && JUNCTION_STOPS) {
-			car_stop(ROBOT_STOPPED);
-			tm_printf((UB *)"[car] JUNCTION (both black) - stopped. Send start to go again.\n");
 		} else {
 			/* Proportional steer.  err is +-511: 0 = line centred
 			   between the sensors, + = line under the LEFT sensor.
@@ -928,6 +1256,7 @@ EXPORT void mission_task(INT stacd, void *exinf)
 		while (tk_rcv_mbf(mbf_barcode, &b, TMO_POL) == (INT)sizeof(b)) {
 			on_barcode(b);
 		}
+		bar_track_edges(t);	/* after on_barcode: a result closes its pass first */
 #if APP_WITH_S5
 		avoid_step();		/* after on_line(): uses fresh g_lb / g_rb */
 #endif
