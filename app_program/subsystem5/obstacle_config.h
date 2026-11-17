@@ -35,10 +35,13 @@
 #define OA_DIST_MIN_VALID_CM	(6U)
 
 /* ---------------------------------------------------------------- Detection */
-/* TUNE: obstacle confirmed below this. Must be far enough for the narrow
-   sweep (+-25 deg) and the wide beam to see past a ~15 cm object: from
-   25 cm every angle hit it (L=0 R=0); edges first showed at ~30 cm. */
-#define OA_STOP_DIST_CM		(35U)
+/* TUNE: obstacle confirmed below this. Lowered to 20 so the car stops
+   closer. Trade-off: from 25 cm or less a ~15 cm object fills the whole
+   +-25 deg sweep (both edges unseen, L=0 R=0, log 2026-11-02), so the
+   first plan is usually REVERSE; the OA_REVERSE_CM back-off (now ended
+   on the wheel encoders) brings the car to ~35 cm, where edges showed.
+   Keep above OA_DIST_MIN_VALID_CM (checked in drv_hcsr04.c). */
+#define OA_STOP_DIST_CM		(20U)
 #define OA_CONFIRM_COUNT	(2U)	/* Consecutive readings to confirm.       */
 
 /* ---------------------------------------------------------------- Servo */
@@ -51,7 +54,15 @@
 #define OA_SERVO_PULSE_MIN_US	(500U)	/* TUNE: pulse at 0 deg.                  */
 #define OA_SERVO_PULSE_MAX_US	(2500U)	/* TUNE: pulse at 180 deg.                */
 #define OA_SERVO_MS_PER_DEG	(2U)	/* SG90 ~0.1 s / 60 deg = 1.7 ms/deg.     */
-#define OA_SERVO_SETTLE_MS	(30U)	/* TUNE: extra wait after a move.         */
+#define OA_SERVO_SETTLE_MS	(50U)	/* TUNE: still time after a move, before
+					   pinging (was 30: let the mount stop
+					   shaking first).                        */
+/* The servo is moved in small steps instead of one jump, so it turns
+   gently: the SG90 alone swings at ~600 deg/s, which shook the sensor
+   loose. OA_SERVO_SLEW_DEG every OA_SERVO_SLEW_MS (one 10 ms kernel tick,
+   really 10-20 ms) = about 100-200 deg/s. TUNE: lower SLEW_DEG = slower. */
+#define OA_SERVO_SLEW_DEG	(2U)
+#define OA_SERVO_SLEW_MS	(10U)
 #define OA_SERVO_LEFT_IS_HIGH	(1)	/* 1: angle > 90 points LEFT. VERIFY.     */
 
 /*
@@ -89,14 +100,23 @@
 /* ---------------------------------------------------------------- Waits */
 #define OA_WAIT_CHUNK_MS	(50U)	/* <= 60 ms, agreed for the heartbeat.    */
 #define OA_STOP_ACK_TIMEOUT_MS	(500U)
-#define OA_MOVE_TIMEOUT_MS	(8000U)	/* One motion_q move not finished in this
-					   long: Mission Control is not answering. */
+#define OA_MOVE_TIMEOUT_MS	(15000U)	/* One motion_q move not finished in this
+					   long: Mission Control is not answering.
+					   Must stay longer than S2's AV_MOVE_CAP_MS
+					   (14000) plus its AV_GAP_MS and loop slack:
+					   S2 now ends moves on wheel-encoder distance
+					   and stops a stalled move itself.        */
 
 /* ------------------------------------------------- Bypass + line recovery */
 /* S5 plans every leg; Mission Control drives each one (motion_q) and its
    open-loop distance / angle calibration decides how accurate they are. */
 #define OA_REVERSE_CM		(15U)	/* TUNE: back off this far, then rescan.  */
-#define OA_TURN_OUT_DEG		(45U)	/* Leave / rejoin the line at 45 deg.      */
+#define OA_TURN_OUT_DEG		(45U)	/* Leave the line at 45 deg.               */
+/* TUNE: turn back toward the line after passing the obstacle. Steeper
+   than OA_TURN_OUT_DEG so the car reaches the line sooner: at 45 deg it
+   came back too shallow to rejoin in time. Leg 7 turns back the same
+   amount to run along the line again. Must be 1..90. */
+#define OA_TURN_IN_DEG		(60U)
 #define OA_DEFAULT_SIDESTEP_CM	(20U)	/* If the profile gives none (255).        */
 #define OA_PASS_EXTRA_CM	(25U)	/* TUNE: obstacle depth + car length: drive
 					   this far past the obstacle's front.   */

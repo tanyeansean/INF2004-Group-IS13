@@ -1,0 +1,19 @@
+# S5 host logic tests, run 2026-11-17 13:39 +08
+# commit 302a8e2 + uncommitted working tree (obstacle_profile.c, obstacle_msg.c unchanged vs HEAD: yes)
+# gcc 16, -std=c11 -Wall -Wextra
+
+header round-trip: 160 combinations
+byte fields round-trip: 0..255
+undefined plan codes 5..7 rejected
+FAIL test_obstacle.c:151: box: expected LEFT, got 4
+box scenario: closest=25 width=2 L=0 R=20 plan=4 sidestep=255
+profile scenarios: box, empty, wall, blocked, angle overflow
+
+--- Week 13 item 3: message / buffer sizes (bytes) ---
+item                           before    after
+obstacle_q message                 32        6
+scan buffer (oa_scan_t)            23       14
+(host sizes; recheck with the ARM build - see README)
+
+FAIL (1 failure)
+exit=1

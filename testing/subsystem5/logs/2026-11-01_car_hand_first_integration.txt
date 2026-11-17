@@ -1,0 +1,63 @@
+# S5 on the car, first integrated run with the 1 Hz [S5 dbg] status line.
+# Date: 2026-11-01, evening. Tester: Joe (Buddy 5).
+# Firmware: branch obstacle-scan-integration, commit 72388c2 + uncommitted
+#   working tree (APP_WITH_S5 = 1, OA_SENSOR_PROBE = 0, OA_DEBUG = 1).
+#   Mission Control was the earlier timed-bypass version (S2 drove the
+#   bypass, OBS_MS_PER_CM 65), since replaced.
+# Obstacle: a hand placed in front of the car while line following.
+# EXCERPT: the 2 Hz "mode=..." status lines from Mission Control are cut
+#   between events. Every [S5 dbg], [obs] and [car] line is kept, in order,
+#   exactly as captured from the USB console.
+
+[S5 dbg] state=MONITOR ping=OK dist=29 last_width=1708us edges=2 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=30 last_width=1716us edges=28 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=30 last_width=1716us edges=54 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=30 last_width=1741us edges=80 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=30 last_width=1716us edges=106 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=30 last_width=1761us edges=132 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=30 last_width=1736us edges=158 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=30 last_width=1736us edges=184 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=30 last_width=1711us edges=210 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=29 last_width=1661us edges=236 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=30 last_width=1718us edges=262 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=29 last_width=1673us edges=288 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=29 last_width=1689us edges=314 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=30 last_width=1713us edges=340 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=29 last_width=1671us edges=366 noise=0 bad_in_row=0
+READY. Send 'start' over MQTT or press GP20. GP20 again = stop.
+[S5 dbg] state=MONITOR ping=OK dist=30 last_width=1739us edges=392 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=29 last_width=1691us edges=418 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=32 last_width=1837us edges=444 noise=0 bad_in_row=0
+[obs] obstacle at 24 cm (car idle)
+[S5 dbg] state=FINE ping=OK dist=27 last_width=1549us edges=468 noise=0 bad_in_row=0
+[obs] plan REVERSE: closest=22 width=15 L=0 R=0 side=255
+[S5 dbg] state=COARSE ping=OK dist=25 last_width=1443us edges=492 noise=0 bad_in_row=0
+[S5 dbg] state=FINE ping=OK dist=37 last_width=2145us edges=516 noise=0 bad_in_row=0
+[obs] plan REVERSE: closest=25 width=20 L=0 R=0 side=255
+[S5 dbg] state=FINE ping=OK dist=43 last_width=2522us edges=540 noise=0 bad_in_row=0
+[S5 dbg] FAULT: no route (both sides blocked, retries used)
+[obs] plan STOP: closest=38 width=0 L=0 R=0 side=255
+[obs] S5 FAULT, cause: NO SAFE ROUTE (both sides blocked). START / GP20 clears it.
+[car] START (base PWM M1=36 M2=36)
+[S5 dbg] state=MONITOR ping=OK dist=53 last_width=3075us edges=546 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=49 last_width=2859us edges=572 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=49 last_width=2853us edges=598 noise=0 bad_in_row=0
+[obs] OBSTACLE at 25 cm - stopping
+[S5 dbg] state=COARSE ping=OK dist=43 last_width=2497us edges=620 noise=0 bad_in_row=0
+[obs] plan REVERSE: closest=22 width=0 L=4 R=0 side=255
+[obs] reversing 10 cm, then S5 rescans
+[S5 dbg] state=COARSE ping=OK dist=27 last_width=1552us edges=644 noise=0 bad_in_row=0
+[S5 dbg] state=FINE ping=OK dist=28 last_width=1610us edges=670 noise=0 bad_in_row=0
+[obs] plan LEFT: closest=26 width=20 L=255 R=0 side=27
+[obs] bypass LEFT, sidestep 27 cm (leg 2474 ms)
+[S5 dbg] state=BYPASS ping=OK dist=17 last_width=992us edges=696 noise=0 bad_in_row=0
+[S5 dbg] state=BYPASS ping=OK dist=25 last_width=1439us edges=722 noise=0 bad_in_row=0
+[S5 dbg] state=BYPASS ping=OK dist=75 last_width=4353us edges=748 noise=0 bad_in_row=0
+[S5 dbg] state=BYPASS ping=OK dist=52 last_width=3022us edges=774 noise=0 bad_in_row=0
+[car] STOP (GP20 button)
+[S5 dbg] state=MONITOR ping=OK dist=51 last_width=2986us edges=800 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=49 last_width=2861us edges=826 noise=0 bad_in_row=0
+
+# Tester's observation: the hand was identified; the car reversed, then
+# turned sharply left (first 45 deg spin of the bypass) before being
+# stopped with GP20.

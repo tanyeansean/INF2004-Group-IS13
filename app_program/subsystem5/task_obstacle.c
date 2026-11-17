@@ -194,6 +194,47 @@ LOCAL void oa_debug_scan(void)
 	}
 	tm_printf((UB *)"%s\n", s_dbg_scan_buf);
 }
+
+/* One-time boot check that the TIMER really counts 1 us. The kernel tick
+   is SysTick on the processor clock, independent of the watchdog TICK, so
+   tk_get_otm() is a valid reference. */
+#define OA_TCHK_ALIGN_MS		(10U)	/* one kernel tick: start on an edge */
+#define OA_TCHK_MS			(200U)	/* 4 x OA_WAIT_CHUNK_MS; one-tick
+						   quantisation = +-5 %          */
+#define OA_TCHK_MIN_US_PER_MS		(900U)	/* +-10 %; a slow TIMER reads    */
+#define OA_TCHK_MAX_US_PER_MS		(1100U)	/* about 23 us/ms, far outside   */
+
+LOCAL void oa_timer_check(void)
+{
+	SYSTIM	t0, t1;
+	UW	u0, u1, k_ms, us, rate;
+	BOOL	ok;
+
+	oa_sleep_ms(OA_TCHK_ALIGN_MS);
+	(void)tk_get_otm(&t0);
+	u0 = s5_time_us();
+
+	oa_sleep_ms(OA_TCHK_MS);
+	(void)tk_get_otm(&t1);
+	u1 = s5_time_us();
+
+	k_ms = (UW)t1.lo - (UW)t0.lo;
+	us = u1 - u0;
+	rate = (k_ms == 0U) ? 0U : (us / k_ms);
+	ok = ((rate >= OA_TCHK_MIN_US_PER_MS) && (rate <= OA_TCHK_MAX_US_PER_MS)) ?
+	     TRUE : FALSE;
+
+	if (ok != FALSE) {
+		tm_printf((UB *)"[S5 dbg] timer check: %u ms kernel = %u us TIMER "
+			  "(%u us/ms) OK\n",
+			  (UINT)k_ms, (UINT)us, (UINT)rate);
+	} else {
+		tm_printf((UB *)"[S5 dbg] timer check: %u ms kernel = %u us TIMER "
+			  "(%u us/ms) BAD: TIMER not 1 MHz (watchdog TICK), "
+			  "ultrasonic will read out of range\n",
+			  (UINT)k_ms, (UINT)us, (UINT)rate);
+	}
+}
 #endif /* OA_DEBUG */
 
 /* One ping, never faster than the HC-SR04's 60 ms minimum period. Paced
@@ -250,12 +291,39 @@ LOCAL hcsr04_status_t oa_ping(UB *p_dist_cm)
 	return status;
 }
 
+/* Turn the servo to angle_deg in OA_SERVO_SLEW_DEG steps, then let it
+   settle. Every step sleeps through oa_sleep_ms(), so the heartbeat keeps
+   going. The target is clamped like drv_servo_set_angle() clamps it, so
+   the loop always reaches it. */
 LOCAL void oa_servo_move(UB angle_deg)
 {
-	UB const from_deg = drv_servo_get_angle();
+	UB	at = drv_servo_get_angle();
+	UB	target = angle_deg;
 
-	drv_servo_set_angle(angle_deg);
-	oa_sleep_ms(drv_servo_travel_ms(from_deg, angle_deg));
+#if (OA_SERVO_ENABLE == 0)
+	drv_servo_set_angle(target);	/* nothing moves: nothing to wait for */
+	(void)at;
+#else
+	if (target < OA_SERVO_MIN_DEG) {
+		target = OA_SERVO_MIN_DEG;
+	} else if (target > OA_SERVO_MAX_DEG) {
+		target = OA_SERVO_MAX_DEG;
+	} else {
+		/* In range. */
+	}
+	while (at != target) {
+		if (at < target) {
+			at = ((UB)(target - at) > OA_SERVO_SLEW_DEG)
+			   ? (UB)(at + OA_SERVO_SLEW_DEG) : target;
+		} else {
+			at = ((UB)(at - target) > OA_SERVO_SLEW_DEG)
+			   ? (UB)(at - OA_SERVO_SLEW_DEG) : target;
+		}
+		drv_servo_set_angle(at);
+		oa_sleep_ms(OA_SERVO_SLEW_MS);
+	}
+	oa_sleep_ms(OA_SERVO_SETTLE_MS);
+#endif
 }
 
 LOCAL void oa_send(obs_msg_type_t type, obs_plan_t plan)
@@ -517,17 +585,22 @@ LOCAL s5_state_t oa_state_plan(void)
 
 /*
  * Stage 4 (drive the bypass) + Stage 5 (line recovery), on side D:
- *   1 turn 45 deg toward D            leave the line
+ *   1 turn OA_TURN_OUT_DEG toward D   leave the line
  *   2 forward sidestep * sqrt(2)      ends sidestep cm off the line
- *   3 turn 45 deg back                parallel to the line
+ *   3 turn OA_TURN_OUT_DEG back       parallel to the line
  *   4 forward to past the obstacle    (closest - sidestep) + OA_PASS_EXTRA_CM
- *   5 turn 45 deg back toward the line
+ *   5 turn OA_TURN_IN_DEG back toward the line (steeper than 45: a
+ *     shallow return did not reach the line in time)
  *   6 forward until a front IR sensor sees the line (up to 2x leg 2)
- *   7 turn 45 deg toward D            heading along the line again
+ *   7 turn OA_TURN_IN_DEG toward D    heading along the line again
  * then CLEAR hands the car back to line following. If leg 6 misses the
- * line, one more 45 deg turn (square to the line) and a second search of
- * OA_SEEK_MAX_CM; leg 7 is then 90 deg. Forward legs keep pinging ahead.
+ * line, turn the rest of the way to square to the line (90 - TURN_IN)
+ * and search once more for OA_SEEK_MAX_CM; leg 7 is then 90 deg.
+ * Forward legs keep pinging ahead.
  */
+#if (OA_TURN_IN_DEG < 1U) || (OA_TURN_IN_DEG > 90U)
+#error "OA_TURN_IN_DEG must be 1..90: the second search squares up with 90 - OA_TURN_IN_DEG."
+#endif
 LOCAL s5_state_t oa_state_bypass(void)
 {
 	BOOL const		b_left = (s_ctx.plan == (unsigned int)OBS_PLAN_LEFT) ? TRUE : FALSE;
@@ -540,7 +613,7 @@ LOCAL s5_state_t oa_state_bypass(void)
 					 ? ((UW)s_ctx.prof.closest_cm - side_cm) : 0U;
 	oa_leg_t		legs[5];
 	oa_move_result_t	r = OA_MOVE_DONE;
-	UB			align_deg = (UB)OA_TURN_OUT_DEG;
+	UB			align_deg = (UB)OA_TURN_IN_DEG;
 	UINT			i;
 
 	legs[0].mode = turn_out;      legs[0].param = (UB)OA_TURN_OUT_DEG; legs[0].b_watch = FALSE;
@@ -548,7 +621,7 @@ LOCAL s5_state_t oa_state_bypass(void)
 	legs[2].mode = turn_back;     legs[2].param = (UB)OA_TURN_OUT_DEG; legs[2].b_watch = FALSE;
 	legs[3].mode = MCMD_FWD_DIST; legs[3].param = oa_clamp_cm(ahead_cm + OA_PASS_EXTRA_CM);
 	legs[3].b_watch = TRUE;
-	legs[4].mode = turn_back;     legs[4].param = (UB)OA_TURN_OUT_DEG; legs[4].b_watch = FALSE;
+	legs[4].mode = turn_back;     legs[4].param = (UB)OA_TURN_IN_DEG;  legs[4].b_watch = FALSE;
 
 	/* Stage 4: around the obstacle. */
 	for (i = 0U; i < (sizeof(legs) / sizeof(legs[0])); i++) {
@@ -561,12 +634,16 @@ LOCAL s5_state_t oa_state_bypass(void)
 	/* Stage 5: line recovery. */
 	r = oa_move(MCMD_FWD_TO_LINE, oa_clamp_cm(diag_cm * OA_SEEK_FACTOR), TRUE);
 	if (r == OA_MOVE_DONE) {
-		/* Missed it: turn square to the line and look once more. */
-		r = oa_move(turn_back, (UB)OA_TURN_OUT_DEG, FALSE);
+		/* Missed it: turn the rest of the way to square to the line
+		   (90 - OA_TURN_IN_DEG) and look once more. At 90 there is
+		   nothing left to turn, so go straight to the search. */
+		if (OA_TURN_IN_DEG < 90U) {
+			r = oa_move(turn_back, (UB)(90U - OA_TURN_IN_DEG), FALSE);
+		}
 		if (r == OA_MOVE_DONE) {
 			r = oa_move(MCMD_FWD_TO_LINE, (UB)OA_SEEK_MAX_CM, TRUE);
 		}
-		align_deg = (UB)(2U * OA_TURN_OUT_DEG);
+		align_deg = (UB)90U;
 		if (r == OA_MOVE_DONE) {
 #if OA_DEBUG
 			tm_printf((UB *)"[S5 dbg] FAULT: line not found after the bypass\n");
@@ -688,6 +765,9 @@ EXPORT void obstacle_task(INT stacd, void *exinf)
 		/* Waiting for Mission Control. */
 	}
 
+#if OA_DEBUG
+	oa_timer_check();	/* once: proves the 1 us TIMER after this boot */
+#endif
 	s_ctx.last_trigger_us = s5_time_us();
 	profile_reset(&s_ctx.prof);
 	oa_enter(S5_STATE_MONITOR);

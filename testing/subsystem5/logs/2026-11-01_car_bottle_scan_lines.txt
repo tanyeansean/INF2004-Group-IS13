@@ -1,0 +1,52 @@
+# S5 on the car: water bottle, first run with the per-sweep "[S5 dbg] scan" line.
+# Date: 2026-11-01, late evening. Tester: Joe (Buddy 5).
+# Firmware: branch obstacle-scan-integration, commit 72388c2 + uncommitted
+#   working tree (APP_WITH_S5 = 1, OA_DEBUG = 1, scan line added, side
+#   clearance ignores readings beyond OA_OBSTACLE_RANGE_CM).
+#   Mission Control was the earlier timed-bypass version (OBS_MS_PER_CM 65,
+#   base PWM 36), since replaced.
+# Obstacle: water bottle (about 7 cm across) on the line.
+# EXCERPT: the 2 Hz "mode=..." status lines from Mission Control are cut
+#   between events. Every [S5 dbg], [obs], [car] and [bar] line is kept,
+#   in order, exactly as captured.
+
+[car] START (base PWM M1=36 M2=36)
+[S5 dbg] state=MONITOR ping=OK dist=37 last_width=2135us edges=884 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=34 last_width=1952us edges=910 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=29 last_width=1703us edges=936 noise=0 bad_in_row=0
+[S5 dbg] state=MONITOR ping=OK dist=26 last_width=1498us edges=962 noise=0 bad_in_row=0
+[obs] OBSTACLE at 25 cm - stopping
+[S5 dbg] scan COARSE: 65:26 75:25 85:25 95:25 105:26 115:30
+[S5 dbg] state=FINE ping=OK dist=26 last_width=1496us edges=984 noise=0 bad_in_row=0
+[S5 dbg] scan FINE: 65:26 70:25 75:25 80:25 85:25 90:25 95:25 100:26 105:27 110:28 115:28
+[obs] plan REVERSE: closest=25 width=16 L=0 R=0 side=255
+[obs] reversing 10 cm, then S5 rescans
+[S5 dbg] state=COARSE ping=OK dist=28 last_width=1646us edges=1006 noise=0 bad_in_row=0
+[S5 dbg] scan COARSE: 65:28 75:27 85:27 95:28 105:29 115:59
+[S5 dbg] state=FINE ping=OK dist=28 last_width=1598us edges=1030 noise=0 bad_in_row=0
+[S5 dbg] scan FINE: 65:29 70:28 75:27 80:27 85:27 90:28 95:28 100:28 105:29 110:29 115:56
+[obs] plan REVERSE: closest=27 width=15 L=14 R=0 side=255
+[obs] reversing 10 cm, then S5 rescans
+[S5 dbg] state=COARSE ping=OK dist=30 last_width=1733us edges=1040 noise=0 bad_in_row=0
+[S5 dbg] scan COARSE: 65:30 75:30 85:30 95:30 105:33 115:68
+[S5 dbg] state=FINE ping=OK dist=30 last_width=1763us edges=1066 noise=0 bad_in_row=0
+[S5 dbg] scan FINE: 65:30 70:30 75:30 80:30 85:29 90:30 95:30 100:30 105:33 110:76 115:75
+[obs] plan LEFT: closest=29 width=14 L=255 R=0 side=21
+[obs] bypass LEFT, sidestep 21 cm (leg 1924 ms)
+[S5 dbg] state=BYPASS ping=OK dist=85 last_width=4904us edges=1092 noise=0 bad_in_row=0
+[S5 dbg] state=BYPASS ping=OK dist=84 last_width=4844us edges=1118 noise=0 bad_in_row=0
+[S5 dbg] state=BYPASS ping=OK dist=27 last_width=1563us edges=1144 noise=0 bad_in_row=0
+[S5 dbg] state=BYPASS ping=OK dist=67 last_width=3871us edges=1170 noise=0 bad_in_row=0
+[bar] INVALID (partial: 2 of 30 edges)
+[S5 dbg] state=BYPASS ping=OK dist=57 last_width=3318us edges=1198 noise=0 bad_in_row=0
+[S5 dbg] state=BYPASS ping=OK dist=55 last_width=3213us edges=1224 noise=0 bad_in_row=0
+[S5 dbg] state=BYPASS ping=OK dist=55 last_width=3214us edges=1250 noise=0 bad_in_row=0
+[S5 dbg] state=BYPASS ping=OK dist=55 last_width=3214us edges=1276 noise=0 bad_in_row=0
+[obs] bypass took too long - stopped. Send start / press GP20 to go again.
+[S5 dbg] state=MONITOR ping=OK dist=55 last_width=3218us edges=1302 noise=0 bad_in_row=0
+
+# Tester's observations (same session):
+#  - Each "reversing 10 cm" visibly moved about 3 cm. The scan data agree:
+#    closest 25 -> 27 -> 29 cm across the two reverses.
+#  - During the bypass the car "barely moved" before the 8 s bypass limit:
+#    the timed open-loop legs drove far less than they assumed.

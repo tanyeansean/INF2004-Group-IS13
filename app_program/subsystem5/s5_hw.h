@@ -13,8 +13,8 @@
 #include "../app.h"
 
 /*
- * Take TIMER and PWM out of reset and start the 1 MHz timer tick, if not
- * already done. Clear-only and idempotent, so it is safe if another
+ * Take TIMER and PWM out of reset and always set the 1 MHz timer tick
+ * (watchdog TICK, 12 cycles). Idempotent, so it is safe if another
  * subsystem does the same. Belongs in shared start-up code (see README):
  * Sean's motor PWM needs the PWM block too.
  */

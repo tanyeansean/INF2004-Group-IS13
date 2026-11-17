@@ -215,18 +215,25 @@ void profile_build(oa_scan_t const *p_scan, oa_profile_t *p_prof)
 	}
 
 	/*
-	 * 6. If the obstacle runs off the end of the scan, its edge was never
-	 *    seen, so that side is UNKNOWN: treat it as blocked, never open.
-	 *    (Found by the host "wall" test.) Index 0 = lowest angle.
+	 * 6. If the obstacle runs off the end of the SERVO SWEEP, its edge was
+	 *    never seen, so that side is UNKNOWN: treat it as blocked, never
+	 *    open. (Found by the host "wall" test.) Index 0 = lowest angle.
+	 *    Only at the servo limits: the fine scan is a window of
+	 *    OA_FINE_MARGIN_DEG past the coarse hits, and the coarse scan
+	 *    already found no hit beyond that window. Treating a window end
+	 *    as unknown made every narrow, far obstacle (the wide beam echoes
+	 *    across the whole window) read L=0 R=0 and REVERSE, and each
+	 *    reverse made it narrower, so it reversed again, then STOP.
 	 */
-	if (0U == lo) {
+	if ((0U == lo) && (scan_angle(p_scan, 0U) <= OA_SERVO_MIN_DEG)) {
 #if (OA_SERVO_LEFT_IS_HIGH != 0)
 		gap_right = 0;
 #else
 		gap_left = 0;
 #endif
 	}
-	if ((p_scan->count - 1U) == hi) {
+	if (((p_scan->count - 1U) == hi) &&
+	    (scan_angle(p_scan, (uint8_t)(p_scan->count - 1U)) >= OA_SERVO_MAX_DEG)) {
 #if (OA_SERVO_LEFT_IS_HIGH != 0)
 		gap_left = 0;
 #else

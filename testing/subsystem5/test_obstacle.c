@@ -132,7 +132,13 @@ make_scan (oa_scan_t * p_s, uint8_t start, uint8_t step, uint8_t end,
     }
 }
 
-static uint8_t box_right_of_centre (uint8_t a) { return ((a >= 70U) && (a <= 100U)) ? 25U : ((a <= 50U) ? 45U : 255U); }
+/* Scenarios use the real sweep, OA_SERVO_MIN_DEG..OA_SERVO_MAX_DEG, like
+   subsystem5_test.c on the board. (They used 40..140 and 15..165 before the
+   mount limited the servo to 65..115: those scans were cut short at
+   OA_MAX_SCAN_POINTS and no longer tested what their names said.) */
+static uint8_t box_right_of_centre (uint8_t a) { return ((a >= 85U) && (a <= 100U)) ? 25U : ((a <= 65U) ? 45U : 255U); }
+/* Narrow obstacle far away, wide beam: echoes across the whole fine window */
+static uint8_t far_narrow (uint8_t a)          { return ((a >= 70U) && (a <= 110U)) ? 40U : 255U; }
 static uint8_t nothing (uint8_t a)             { (void)a; return 255U; }
 static uint8_t wall (uint8_t a)                { (void)a; return 20U; }
 
@@ -144,7 +150,7 @@ test_profile_scenarios (void)
     uint8_t      step;
     obs_plan_t   plan;
 
-    make_scan(&s, 40U, 5U, 140U, box_right_of_centre);
+    make_scan(&s, OA_SERVO_MIN_DEG, OA_FINE_STEP_DEG, OA_SERVO_MAX_DEG, box_right_of_centre);
     profile_build(&s, &p);
     plan = profile_plan(&p, 0U, &step);
     CHECK(p.b_found && (p.closest_cm == 25U), "box not found at 25 cm");
@@ -152,13 +158,13 @@ test_profile_scenarios (void)
     printf("box scenario: closest=%u width=%u L=%u R=%u plan=%d sidestep=%u\n",
            p.closest_cm, p.width_cm, p.left_clear_cm, p.right_clear_cm, (int)plan, step);
 
-    make_scan(&s, 15U, 5U, 165U, nothing);
+    make_scan(&s, OA_SERVO_MIN_DEG, OA_FINE_STEP_DEG, OA_SERVO_MAX_DEG, nothing);
     profile_build(&s, &p);
     CHECK(!p.b_found, "empty scan reported an obstacle");
     CHECK(profile_plan(&p, 0U, &step) == OBS_PLAN_CONTINUE, "empty scan: expected CONTINUE");
 
     /* Obstacle wider than the scan: neither side may be reported open. */
-    make_scan(&s, 15U, 5U, 165U, wall);
+    make_scan(&s, OA_SERVO_MIN_DEG, OA_FINE_STEP_DEG, OA_SERVO_MAX_DEG, wall);
     profile_build(&s, &p);
     plan = profile_plan(&p, 0U, &step);
     CHECK((p.left_clear_cm == 0U) && (p.right_clear_cm == 0U),
@@ -169,11 +175,22 @@ test_profile_scenarios (void)
     CHECK(profile_plan(&p, 0U, &step) == OBS_PLAN_REVERSE, "blocked: expected REVERSE");
     CHECK(profile_plan(&p, OA_MAX_RETRIES, &step) == OBS_PLAN_STOP, "blocked, retries out: expected STOP");
 
+    /* S5-U27: a fine window that ends INSIDE the servo sweep is not an
+       unknown edge (the coarse scan saw nothing beyond it), so a far,
+       narrow obstacle filling the window must not read L=0 R=0. */
+    make_scan(&s, 70U, OA_FINE_STEP_DEG, 110U, far_narrow);
+    profile_build(&s, &p);
+    plan = profile_plan(&p, 0U, &step);
+    CHECK((p.left_clear_cm != 0U) && (p.right_clear_cm != 0U),
+          "far narrow: window ends read as blocked, L=%u R=%u", p.left_clear_cm, p.right_clear_cm);
+    CHECK((plan == OBS_PLAN_LEFT) || (plan == OBS_PLAN_RIGHT),
+          "far narrow: expected LEFT or RIGHT, got %d", (int)plan);
+
     /* Angle maths must not wrap near the top of the 8-bit range. */
     s.start_deg = 160U;
     s.step_deg  = 5U;
     CHECK(scan_angle(&s, 1U) == 165U, "scan_angle wrapped");
-    printf("profile scenarios: box, empty, wall, blocked, angle overflow\n");
+    printf("profile scenarios: box, empty, wall, blocked, far narrow, angle overflow\n");
 }
 
 static void

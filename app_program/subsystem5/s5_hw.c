@@ -20,7 +20,6 @@
 
 #define S5_WDT_TICK		(0x4005802CU)	/* WATCHDOG TICK register */
 #define S5_WDT_TICK_ENABLE	(1U << 9)
-#define S5_WDT_TICK_RUNNING	(1U << 10)
 #define S5_XOSC_MHZ		(12U)		/* clk_ref = 12 MHz XOSC  */
 
 #define S5_TIMER_TIMERAWL	(0x40054028U)
@@ -38,10 +37,14 @@ EXPORT void s5_hw_init(void)
 		}
 	}
 
-	/* The TIMER counts 1 us ticks from the watchdog tick generator. */
-	if ((in_w(S5_WDT_TICK) & S5_WDT_TICK_RUNNING) == 0U) {
-		out_w(S5_WDT_TICK, S5_WDT_TICK_ENABLE | S5_XOSC_MHZ);
-	}
+	/* The TIMER counts 1 us ticks from the watchdog tick generator.
+	   Always set it to 12 cycles (1 us at clk_ref 12 MHz). After a
+	   power-on or reset it is already enabled with CYCLES = 0 (reset
+	   value 0x200), so the TIMER would run about 43x slow and every
+	   echo would read as noise / out of range. Same fix as S3's
+	   drv_track_timer_init() in commit 648d108 (Jin, 13 Nov). S5 must
+	   not depend on S3 initialising first. */
+	out_w(S5_WDT_TICK, S5_WDT_TICK_ENABLE | S5_XOSC_MHZ);
 }
 
 EXPORT UW s5_time_us(void)

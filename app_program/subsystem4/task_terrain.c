@@ -78,6 +78,14 @@ LOCAL BOOL	stop_pending = FALSE;	/* a stop command still has to be sent */
 #define S4_DIAG_TIMERAWL	(0x40054028U)
 #define S4_DIAG_WDT_TICK	(0x4005802CU)
 
+/* 1: print the 1 Hz "[imu] ..." status line and every "[imu] terrain_q"
+   line. 0 (default): quiet console. Faults, calibration and hump / lift
+   events always print. Build with EXTRA_CFLAGS=-DS4_PRINT_STATUS=1 or
+   edit here to get them back. */
+#ifndef S4_PRINT_STATUS
+#define S4_PRINT_STATUS		0
+#endif
+
 EXPORT volatile UW	s4_report_word = 0U;	/* latest report (subsystem4.h) */
 LOCAL volatile UW	new_run_req = 0U;	/* s4_new_run() was called */
 
@@ -364,9 +372,11 @@ LOCAL void send_terrain(UINT ev, const terrain_t *t)
 	} else {
 		msgs_dropped++;
 	}
-	tm_printf((UB *)"[imu] terrain_q: state %u, motion %u, lifted %u, highest %u mm\n",
-		  (UINT)terrain_get_state(m), (UINT)terrain_get_motion(m),
-		  (UINT)terrain_get_collision(m), (UINT)terrain_get_peak_mm(m));
+	if (S4_PRINT_STATUS != 0) {
+		tm_printf((UB *)"[imu] terrain_q: state %u, motion %u, lifted %u, highest %u mm\n",
+			  (UINT)terrain_get_state(m), (UINT)terrain_get_motion(m),
+			  (UINT)terrain_get_collision(m), (UINT)terrain_get_peak_mm(m));
+	}
 }
 
 /* The current bits of an event flag, for the status line. */
@@ -468,9 +478,12 @@ EXPORT void terrain_task(INT stacd, void *exinf)
 		}
 
 		/* Status line, about once a second.  "reads" should stay near
-		   100: it shows the loop really runs every 10 ms. */
+		   100: it shows the loop really runs every 10 ms.
+		   Off by default (S4_PRINT_STATUS): it flooded the console. The
+		   counters below still reset every second either way. */
 		count++;
 		if (count >= STATUS_EVERY) {
+			if (S4_PRINT_STATUS != 0) {
 			/* "lean" and "up" are the biggest since the last line:
 			   how close this second came to the lift limits. */
 			tm_printf((UB *)"[imu] %s%s %s tilt %d.%d deg, jolt %d.%d g, shake 0.%03d g,"
@@ -499,6 +512,7 @@ EXPORT void terrain_task(INT stacd, void *exinf)
 					  (UINT)(timer_now - timer_prev));
 				timer_prev = timer_now;
 			}
+			}	/* S4_PRINT_STATUS */
 			peak_jolt = 0.0f;
 			peak_lean = 0.0f;
 			t.up_speed_max = 0.0f;

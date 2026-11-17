@@ -1,0 +1,84 @@
+# S5 on the car: first runs with S5 driving the bypass itself (motion_q, IF-10).
+# Date: 2026-11-02, after midnight. Tester: Joe (Buddy 5).
+# Firmware: branch obstacle-scan-integration, commit 72388c2 + uncommitted
+#   working tree: S5-driven bypass + line recovery, Mission Control as a
+#   motion executor, TIMED moves (AV_DRIVE_PWM 50, AV_MS_PER_CM 50) with a
+#   200 ms soft-start ramp, OA_STOP_DIST_CM 25, OA_REVERSE_CM 10.
+#   The ramp and the timed moves were replaced afterwards (see TEST_LOG).
+# Obstacle: about 15 cm wide, on the line. Three START attempts.
+# EXCERPT: the 2 Hz "mode=..." status lines from Mission Control are cut
+#   between events. Every [S5 dbg], [obs], [car] and [bar] line is kept,
+#   in order, exactly as captured.
+
+[S5 dbg] state=MONITOR ping=OK dist=36 last_width=2062us edges=3518 noise=0 bad_in_row=0
+[bar] INVALID (partial: 3 of 30 edges)
+[S5 dbg] state=MONITOR ping=OK dist=27 last_width=1590us edges=3544 noise=0 bad_in_row=0
+[obs] OBSTACLE at 25 cm - stopping
+[S5 dbg] state=COARSE ping=OK dist=26 last_width=1480us edges=3566 noise=0 bad_in_row=0
+[S5 dbg] scan COARSE: 65:25 75:25 85:25 95:25 105:26 115:26
+[S5 dbg] state=FINE ping=OK dist=26 last_width=1524us edges=3590 noise=0 bad_in_row=0
+[S5 dbg] scan FINE: 65:25 70:25 75:25 80:25 85:25 90:25 95:25 100:25 105:25 110:26 115:26
+[S5 dbg] move BWD 10
+[obs] plan REVERSE: closest=25 width=15 L=0 R=0 side=255
+[S5 dbg] state=COARSE ping=OK dist=13 last_width=766us edges=3598 noise=0 bad_in_row=0
+[S5 dbg] scan COARSE: 65:27 75:27 85:27 95:13 105:11 115:27
+[S5 dbg] state=FINE ping=OK dist=27 last_width=1575us edges=3622 noise=0 bad_in_row=0
+[S5 dbg] scan FINE: 65:27 70:27 75:27 80:27 85:27 90:27 95:10 100:16 105:27 110:27 115:27
+[S5 dbg] move BWD 10
+[obs] plan REVERSE: closest=10 width=8 L=0 R=1 side=255
+[S5 dbg] state=COARSE ping=OK dist=29 last_width=1660us edges=3630 noise=0 bad_in_row=0
+[S5 dbg] scan COARSE: 65:30 75:29 85:29 95:29 105:29 115:29
+[S5 dbg] state=FINE ping=OK dist=29 last_width=1654us edges=3656 noise=0 bad_in_row=0
+[S5 dbg] scan FINE: 65:30 70:29 75:29 80:29 85:29 90:29 95:29 100:28 105:29 110:29 115:29
+[S5 dbg] FAULT: no route (both sides blocked, retries used)
+[obs] plan STOP: closest=28 width=18 L=0 R=0 side=255
+[obs] S5 FAULT: no safe route (both sides blocked) - stopped. START / GP20 clears it.
+[car] START (base PWM M1=36 M2=36)
+[S5 dbg] state=MONITOR ping=OK dist=28 last_width=1623us edges=3660 noise=0 bad_in_row=0
+[obs] OBSTACLE at 25 cm - stopping
+[S5 dbg] state=COARSE ping=OK dist=25 last_width=1439us edges=3682 noise=0 bad_in_row=0
+[S5 dbg] scan COARSE: 65:26 75:25 85:25 95:25 105:25 115:27
+[S5 dbg] state=FINE ping=OK dist=26 last_width=1484us edges=3706 noise=0 bad_in_row=0
+[S5 dbg] scan FINE: 65:26 70:25 75:25 80:25 85:25 90:25 95:25 100:25 105:25 110:26 115:27
+[S5 dbg] move BWD 10
+[obs] plan REVERSE: closest=25 width=16 L=0 R=0 side=255
+[S5 dbg] state=COARSE ping=OK dist=27 last_width=1578us edges=3714 noise=0 bad_in_row=0
+[S5 dbg] scan COARSE: 65:28 75:27 85:27 95:27 105:27 115:27
+[S5 dbg] state=FINE ping=OK dist=27 last_width=1574us edges=3738 noise=0 bad_in_row=0
+[S5 dbg] scan FINE: 65:28 70:27 75:27 80:27 85:27 90:27 95:27 100:27 105:27 110:27 115:27
+[S5 dbg] move BWD 10
+[obs] plan REVERSE: closest=27 width=16 L=0 R=0 side=255
+[S5 dbg] state=COARSE ping=OK dist=29 last_width=1684us edges=3746 noise=0 bad_in_row=0
+[S5 dbg] scan COARSE: 65:30 75:29 85:28 95:29 105:29 115:29
+[S5 dbg] state=FINE ping=OK dist=29 last_width=1654us edges=3772 noise=0 bad_in_row=0
+[S5 dbg] scan FINE: 65:30 70:29 75:29 80:29 85:29 90:29 95:29 100:28 105:29 110:28 115:29
+[S5 dbg] FAULT: no route (both sides blocked, retries used)
+[obs] plan STOP: closest=28 width=18 L=0 R=0 side=255
+[obs] S5 FAULT: no safe route (both sides blocked) - stopped. START / GP20 clears it.
+[car] START (base PWM M1=36 M2=36)
+[S5 dbg] state=MONITOR ping=OK dist=28 last_width=1649us edges=3778 noise=0 bad_in_row=0
+[obs] OBSTACLE at 25 cm - stopping
+[S5 dbg] state=COARSE ping=OK dist=25 last_width=1421us edges=3800 noise=0 bad_in_row=0
+[S5 dbg] scan COARSE: 65:25 75:25 85:24 95:25 105:25 115:27
+[S5 dbg] state=FINE ping=OK dist=25 last_width=1439us edges=3826 noise=0 bad_in_row=0
+[S5 dbg] scan FINE: 65:25 70:25 75:24 80:24 85:24 90:24 95:24 100:25 105:25 110:25 115:27
+[S5 dbg] move BWD 10
+[obs] plan REVERSE: closest=24 width=16 L=0 R=0 side=255
+[S5 dbg] state=COARSE ping=OK dist=27 last_width=1569us edges=3834 noise=0 bad_in_row=0
+[S5 dbg] scan COARSE: 65:27 75:27 85:26 95:27 105:27 115:28
+[S5 dbg] state=FINE ping=OK dist=27 last_width=1543us edges=3860 noise=0 bad_in_row=0
+[S5 dbg] scan FINE: 65:27 70:27 75:27 80:26 85:26 90:26 95:26 100:26 105:27 110:27 115:27
+[S5 dbg] move BWD 10
+[obs] plan REVERSE: closest=26 width=16 L=0 R=0 side=255
+[S5 dbg] state=COARSE ping=OK dist=29 last_width=1687us edges=3868 noise=0 bad_in_row=0
+[S5 dbg] scan COARSE: 65:30 75:29 85:27 95:28 105:28 115:29
+[S5 dbg] state=FINE ping=OK dist=28 last_width=1638us edges=3894 noise=0 bad_in_row=0
+[S5 dbg] scan FINE: 65:30 70:29 75:28 80:28 85:28 90:28 95:28 100:28 105:28 110:29 115:29
+[S5 dbg] FAULT: no route (both sides blocked, retries used)
+[obs] plan STOP: closest=28 width=18 L=0 R=0 side=255
+[obs] S5 FAULT: no safe route (both sides blocked) - stopped. START / GP20 clears it.
+
+# Analysis: from 25 cm the obstacle filled the whole +-25 deg sweep (flat
+# scans), so both edges were unseen and both sides counted as blocked
+# (L=0 R=0). Each "BWD 10" moved only about 2 cm (closest 25 -> 27 -> 29),
+# so two retries never got far enough back to see an edge.

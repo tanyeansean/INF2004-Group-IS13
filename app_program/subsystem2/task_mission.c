@@ -225,38 +225,73 @@ LOCAL void maneuver_step(void)
  *  If the car is IDLE, nothing moves and every request is answered at
  *  once, so S5 can be tested on the bench with the wheels still.
  *
- *  Open loop until the encoders + PID exist: a distance is a time at
- *  AV_DRIVE_PWM, an angle a time at AV_TURN_PWM. Both need measuring.
+ *  Moves now end on wheel-encoder distance, measured from a snapshot
+ *  taken when the move starts: straight moves on the mean of both
+ *  wheels, spins on the mean wheel arc. A stalled wheel or the move cap
+ *  stops the car and aborts S5 (car_stop), never MOVE_DONE.
  *  Gentler than the barcode turns on purpose: lower PWM, and the car
  *  pauses AV_GAP_MS between moves so it never flips straight from a spin
- *  into a drive. Power is constant for the whole move, so the distance
- *  stays proportional to the time (no ramp: it only made the short
- *  open-loop moves fall short). Stops are instant.
+ *  into a drive. Power is constant for the whole move (no ramp). Stops
+ *  are instant.
  * ===================================================================== */
 #define AV_DRIVE_PWM		50	/* TUNE: straight moves. The line-follow
 					   base (36) barely moves from a standstill */
 #define AV_TURN_PWM		80	/* TUNE: spins. Softer than TURN_PWM (130),
 					   so its own calibration below            */
-#define AV_MS_PER_CM		50U	/* TUNE: command FWD 30 cm, measure, scale */
-#define AV_MS_PER_DEG		8U	/* TUNE: command a 90 deg turn, measure   */
 #define AV_GAP_MS		150U	/* still between two moves                 */
 #define AV_SETTLE_MS		150U	/* let the car stop rolling before S5 scans */
 #define AV_IDLE_LIMIT_MS	8000U	/* CAR_AVOID, no move running and nothing
 					   from S5 for this long: give up. A
 					   coarse + fine scan with re-pings takes
 					   up to ~4 s, so keep well above that.  */
+#define AV_TRACK_MM		(110U)	/* Measured by Jin, 13 Nov: centre of the left
+					   tyre to centre of the right tyre. Copy of
+					   TRACK_MM in subsystem4/terrain_logic.c, which
+					   S2 must not include. The effective pivot track
+					   while spinning is assumed equal: TUNE if the
+					   45 deg turns come out wrong.            */
+#define AV_UM_PER_CM		(10000U)
+#define AV_PI_360_E7		(87266U)	/* pi / 360 x 1e7 */
+/* Arc per wheel in um for a spin of deg degrees: 45 -> 43196, 90 -> 86393.
+   Largest case 255 * 110 * 87266 = 2.45e9, which fits in UW. */
+#define AV_TURN_ARC_UM(deg)	(((UW)(deg) * AV_TRACK_MM * AV_PI_360_E7) / 10000U)
+#define AV_STALL_MS		(500U)	/* TUNE (guess): a wheel making no progress this
+					   long is stalled. Must cover the spin-up from
+					   standstill.                              */
+#define AV_STALL_STEP_COUNTS	(12)	/* Guess: about 1 mm (12 x 82 um). Ignores the
+					   +-1 count jitter.                        */
+#define AV_MOVE_CAP_MS		(14000U)	/* Backstop only: stall detection is the real
+					   failure check. Must stay below S5's
+					   OA_MOVE_TIMEOUT_MS (15000) minus AV_GAP_MS
+					   and loop slack.                          */
 
 LOCAL BOOL		g_av_settling;	/* OBSTACLE: stopped, waiting to report */
 LOCAL BOOL		g_av_moving;	/* a motion_q move is running */
 LOCAL BOOL		g_av_pausing;	/* move over, AV_GAP_MS before replying */
 LOCAL motor_mode_t	g_av_move;
+LOCAL UB		g_av_param;	/* request param, for the print */
+LOCAL W			g_av_target_um;	/* distance or arc per wheel */
+LOCAL BOOL		g_av_fwd_l;	/* commanded direction per wheel */
+LOCAL BOOL		g_av_fwd_r;
+LOCAL W			g_av_start_l;	/* counts at av_begin() */
+LOCAL W			g_av_start_r;
+LOCAL W			g_av_stop_l;	/* counts at av_finish() */
+LOCAL W			g_av_stop_r;
+LOCAL W			g_av_best_l;	/* best progress so far, counts */
+LOCAL W			g_av_best_r;
+LOCAL UW		g_av_prog_ms_l;	/* time of the last progress step */
+LOCAL UW		g_av_prog_ms_r;
+LOCAL UW		g_av_begin_ms;
+LOCAL UW		g_av_stop_ms;
 LOCAL UINT		g_av_reply;	/* reply to send after the pause */
-LOCAL UW		g_av_until_ms;	/* end of the move / settle / pause */
+LOCAL UW		g_av_until_ms;	/* end of the settle / pause */
 LOCAL UW		g_av_heard_ms;	/* last message from S5 (watchdog) */
 LOCAL UW		g_av_bad = 0U;	/* undecodable messages */
 
 LOCAL const char * const k_obs_plan[] = { "STOP", "CONTINUE", "LEFT", "RIGHT",
 					  "REVERSE", "?", "?", "?" };
+LOCAL const char * const k_av_mode[] = { "STOP", "STEER", "FWD", "BWD",
+					 "TURN_L", "TURN_R", "U_TURN", "FWD_TO_LINE" };
 
 LOCAL void av_reply(UINT bits)
 {
@@ -298,23 +333,115 @@ LOCAL void av_halt(void)
 	g_av_pausing = FALSE;
 }
 
-/* Start one move: constant PWM for len_ms. */
-LOCAL void av_begin(H left, H right, UW len_ms)
-{
-	g_av_moving  = TRUE;
-	g_av_pausing = FALSE;
-	g_av_until_ms = now_ms() + len_ms;
-	motor_set(left, right);
-}
-
 /* End of a move: stop, stay still AV_GAP_MS, then reply. */
 LOCAL void av_finish(UINT reply)
 {
+	drv_encoder_read(&g_av_stop_l, &g_av_stop_r);
+	g_av_stop_ms  = now_ms();
 	motor_set(0, 0);
 	g_av_moving   = FALSE;
 	g_av_pausing  = TRUE;
 	g_av_reply    = reply;
 	g_av_until_ms = now_ms() + AV_GAP_MS;
+}
+
+/* Start one move: constant PWM until the wheels have covered target_um
+   (distance, or arc per wheel for a spin). The encoder counts at this
+   moment are the zero of the move. */
+LOCAL void av_begin(H left, H right, W target_um)
+{
+	drv_encoder_read(&g_av_start_l, &g_av_start_r);
+	g_av_fwd_l     = (left >= 0) ? TRUE : FALSE;
+	g_av_fwd_r     = (right >= 0) ? TRUE : FALSE;
+	g_av_target_um = target_um;
+	g_av_begin_ms  = now_ms();
+	g_av_best_l    = 0;
+	g_av_best_r    = 0;
+	g_av_prog_ms_l = g_av_begin_ms;
+	g_av_prog_ms_r = g_av_begin_ms;
+	g_av_moving    = TRUE;
+	g_av_pausing   = FALSE;
+	if (target_um <= 0) {
+		av_finish(AVOID_EVT_MOVE_DONE);	/* nothing to drive */
+		return;
+	}
+	motor_set(left, right);
+}
+
+/* Counts a wheel has moved in its commanded direction since av_begin(). */
+LOCAL W av_progress(W now, W start, BOOL fwd)
+{
+	W d = fwd ? (now - start) : (start - now);
+
+	return (d < 0) ? 0 : d;
+}
+
+/* Distance done in um: mean of both wheels (left only without the right encoder). */
+LOCAL W av_done_um(W prog_l, W prog_r)
+{
+#if ENC_RIGHT_ENABLED
+	return (s2_counts_to_um(prog_l) + s2_counts_to_um(prog_r)) / 2;
+#else
+	(void)prog_r;
+	return s2_counts_to_um(prog_l);
+#endif
+}
+
+/* One wheel: no new AV_STALL_STEP_COUNTS of progress for AV_STALL_MS. */
+LOCAL BOOL av_wheel_stalled(W prog, W *p_best, UW *p_prog_ms, UW t)
+{
+	if (prog >= (*p_best + AV_STALL_STEP_COUNTS)) {
+		*p_best    = prog;
+		*p_prog_ms = t;
+		return FALSE;
+	}
+	return ((t - *p_prog_ms) >= AV_STALL_MS) ? TRUE : FALSE;
+}
+
+/* One diagnostic line per move: asked vs. measured per wheel (mm). */
+LOCAL void av_report(W cur_l, W cur_r, BOOL b_failed, const char *outcome)
+{
+	W const		l_mm  = s2_counts_to_um(cur_l - g_av_start_l) / 1000;
+	W const		r_mm  = s2_counts_to_um(cur_r - g_av_start_r) / 1000;
+	W const		ask_mm = g_av_target_um / 1000;
+	const char	*p_unit = ((g_av_move == MCMD_TURN_LEFT) || (g_av_move == MCMD_TURN_RIGHT))
+				  ? "deg" : "cm";
+	const char	*p_mode = k_av_mode[(UINT)g_av_move & 7U];
+
+	if (b_failed) {
+#if ENC_RIGHT_ENABLED
+		tm_printf((UB *)"[obs] move %s %u%s ask=%dmm L=%dmm R=%dmm t=%ums FAIL %s - stopped, S5 aborted\n",
+			  p_mode, (UINT)g_av_param, p_unit, (INT)ask_mm, (INT)l_mm, (INT)r_mm,
+			  (UINT)(now_ms() - g_av_begin_ms), outcome);
+#else
+		tm_printf((UB *)"[obs] move %s %u%s ask=%dmm L=%dmm R=%dmm t=%ums FAIL %s - stopped, S5 aborted Renc=off\n",
+			  p_mode, (UINT)g_av_param, p_unit, (INT)ask_mm, (INT)l_mm, (INT)r_mm,
+			  (UINT)(now_ms() - g_av_begin_ms), outcome);
+#endif
+	} else {
+		W const	stop_l_mm = s2_counts_to_um(g_av_stop_l - g_av_start_l) / 1000;
+		W const	stop_r_mm = s2_counts_to_um(g_av_stop_r - g_av_start_r) / 1000;
+
+#if ENC_RIGHT_ENABLED
+		tm_printf((UB *)"[obs] move %s %u%s ask=%dmm L=%dmm R=%dmm stopL=%d stopR=%d t=%ums %s\n",
+			  p_mode, (UINT)g_av_param, p_unit, (INT)ask_mm, (INT)l_mm, (INT)r_mm,
+			  (INT)stop_l_mm, (INT)stop_r_mm, (UINT)(g_av_stop_ms - g_av_begin_ms),
+			  outcome);
+#else
+		tm_printf((UB *)"[obs] move %s %u%s ask=%dmm L=%dmm R=%dmm stopL=%d stopR=%d t=%ums %s Renc=off\n",
+			  p_mode, (UINT)g_av_param, p_unit, (INT)ask_mm, (INT)l_mm, (INT)r_mm,
+			  (INT)stop_l_mm, (INT)stop_r_mm, (UINT)(g_av_stop_ms - g_av_begin_ms),
+			  outcome);
+#endif
+	}
+}
+
+/* A move failed: stop, say why, and car_stop() sends ABORT to S5. */
+LOCAL void av_fail(W cur_l, W cur_r, const char *why)
+{
+	av_halt();
+	av_report(cur_l, cur_r, TRUE, why);
+	car_stop(ROBOT_ERROR);
 }
 
 /* One obstacle_q message. */
@@ -379,22 +506,23 @@ LOCAL void on_motion(motor_cmd_msg_t m)
 		return;
 	}
 
+	g_av_param = (UB)param;
 	g_av_move = mode;
 	switch (mode) {
 	case MCMD_FWD_DIST:
 	case MCMD_FWD_TO_LINE:
-		av_begin(AV_DRIVE_PWM, AV_DRIVE_PWM, param * AV_MS_PER_CM);
+		av_begin(AV_DRIVE_PWM, AV_DRIVE_PWM, (W)(param * AV_UM_PER_CM));
 		s1_post_state((mode == MCMD_FWD_TO_LINE) ? ROBOT_LINE_RECOVERY : ROBOT_AVOIDING);
 		break;
 	case MCMD_BWD_DIST:
-		av_begin((H)-AV_DRIVE_PWM, (H)-AV_DRIVE_PWM, param * AV_MS_PER_CM);
+		av_begin((H)-AV_DRIVE_PWM, (H)-AV_DRIVE_PWM, (W)(param * AV_UM_PER_CM));
 		break;
 	case MCMD_TURN_LEFT:		/* same wheel signs as maneuver_step() */
-		av_begin((H)-AV_TURN_PWM, AV_TURN_PWM, param * AV_MS_PER_DEG);
+		av_begin((H)-AV_TURN_PWM, AV_TURN_PWM, (W)AV_TURN_ARC_UM(param));
 		s1_post_state(ROBOT_AVOIDING);
 		break;
 	case MCMD_TURN_RIGHT:
-		av_begin(AV_TURN_PWM, (H)-AV_TURN_PWM, param * AV_MS_PER_DEG);
+		av_begin(AV_TURN_PWM, (H)-AV_TURN_PWM, (W)AV_TURN_ARC_UM(param));
 		s1_post_state(ROBOT_AVOIDING);
 		break;
 	case MCMD_STOP:
@@ -408,6 +536,12 @@ LOCAL void on_motion(motor_cmd_msg_t m)
 /* Advance the running move / pause / settle. Called every pass. */
 LOCAL void avoid_step(void)
 {
+	UW	t;
+	W	cl;
+	W	cr;
+	W	pl;
+	W	pr;
+
 	if (g_mode != CAR_AVOID) {
 		return;
 	}
@@ -418,18 +552,34 @@ LOCAL void avoid_step(void)
 			av_reply(AVOID_EVT_MOTORS_STOPPED);
 		}
 	} else if (g_av_moving) {
+		t = now_ms();
 		if ((g_av_move == MCMD_FWD_TO_LINE) && (g_lb || g_rb)) {
 			av_finish(AVOID_EVT_LINE_FOUND);
-		} else if (av_time_up()) {
-			av_finish(AVOID_EVT_MOVE_DONE);
 		} else {
-			/* still moving */
+			drv_encoder_read(&cl, &cr);
+			pl = av_progress(cl, g_av_start_l, g_av_fwd_l);
+			pr = av_progress(cr, g_av_start_r, g_av_fwd_r);
+			if (av_done_um(pl, pr) >= g_av_target_um) {
+				av_finish(AVOID_EVT_MOVE_DONE);
+			} else if (av_wheel_stalled(pl, &g_av_best_l, &g_av_prog_ms_l, t)) {
+				av_fail(cl, cr, "left stalled");
+#if ENC_RIGHT_ENABLED
+			} else if (av_wheel_stalled(pr, &g_av_best_r, &g_av_prog_ms_r, t)) {
+				av_fail(cl, cr, "right stalled");
+#endif
+			} else if ((t - g_av_begin_ms) >= AV_MOVE_CAP_MS) {
+				av_fail(cl, cr, "move too long");
+			} else {
+				/* still moving */
+			}
 		}
 	} else if (g_av_pausing) {
 		if (av_time_up()) {
+			drv_encoder_read(&cl, &cr);
 			g_av_pausing  = FALSE;
 			g_av_heard_ms = now_ms();
 			av_reply(g_av_reply);
+			av_report(cl, cr, FALSE, (g_av_reply == AVOID_EVT_LINE_FOUND) ? "LINE" : "DONE");
 		}
 	} else if ((now_ms() - g_av_heard_ms) > AV_IDLE_LIMIT_MS) {
 		car_stop(ROBOT_ERROR);		/* sends ABORT to S5 */

@@ -1,0 +1,25 @@
+# S5 host logic tests, run 2026-11-17 14:06 +08
+# commit 302a8e2 + uncommitted working tree: obstacle_profile.c step 6 fix (window
+#   ends inside the servo sweep are not unknown edges) and test_obstacle.c moved to the
+#   real 65-115 deg sweep, new far-narrow case (S5-U27).
+# gcc 16, -std=c11 -Wall -Wextra
+
+header round-trip: 160 combinations
+byte fields round-trip: 0..255
+undefined plan codes 5..7 rejected
+box scenario: closest=25 width=0 L=255 R=17 plan=2 sidestep=16
+profile scenarios: box, empty, wall, blocked, far narrow, angle overflow
+
+--- Week 13 item 3: message / buffer sizes (bytes) ---
+item                           before    after
+obstacle_q message                 32        6
+scan buffer (oa_scan_t)            23       14
+(host sizes; recheck with the ARM build - see README)
+
+PASS (0 failures)
+exit=0
+
+# Control: the same test file against obstacle_profile.c at HEAD (before the fix):
+FAIL test_obstacle.c:184: far narrow: window ends read as blocked, L=0 R=0
+FAIL test_obstacle.c:186: far narrow: expected LEFT or RIGHT, got 4
+FAIL (2 failures)
