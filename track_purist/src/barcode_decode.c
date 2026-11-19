@@ -88,48 +88,83 @@ static uint8_t at_least_split_ratio(uint32_t a, uint32_t b)
 }
 
 /*
- * Relative split, no absolute widths: the 3 widest of the 9 elements are
- * wide (Code 39 always has exactly 3). The split must be clean: the
- * narrowest wide element >= 1.5 x the widest narrow element. Ties and
- * near-ties fail, so an ambiguous character is never guessed.
- * On success also returns the narrowest wide width (for the gap guard).
+ * Relative split, no absolute widths. 20 Nov (Aurelius): bars are compared
+ * only with bars and spaces only with spaces.
+ *
+ * Before, the 3 widest of all 9 elements were "wide" and the narrowest of
+ * them had to be >= 1.5 x the widest narrow one. A real IR sensor sees
+ * black a little early (or late), so every bar reads longer and every
+ * space shorter by the same amount g. The narrowest wide element is then
+ * the wide SPACE (3u - g) and the widest narrow one a narrow BAR (u + g):
+ * the rule needed g <= 0.6 u. That is 1.8 mm on the 141 mm barcode
+ * (u = 3 mm) but only 1.2 mm at u = 2 mm and 0.9 mm at u = 1.5 mm, so the
+ * same sensor read the big barcodes and failed the small ones with all 30
+ * edges present (PC model: testing/subsystem3/pc/barsim_small.c).
+ *
+ * Every letter A..Z and '*' has exactly 2 wide bars (of 5) and 1 wide
+ * space (of 4), so: the 2 widest bars and the widest space are wide, and
+ * each group must split cleanly on its own (>= 1.5 x). g cancels inside a
+ * group. Anything the old rule accepted is still accepted; ties and
+ * near-ties still fail, so an ambiguous character is never guessed.
+ * On success also returns the wide space's width for the gap guard (the
+ * gaps are spaces, so that is the like-for-like comparison).
  */
 static uint8_t classify_split(const uint32_t elems[BARCODE_CHAR_ELEMENTS],
                               uint16_t *pattern9, uint32_t *min_wide)
 {
     uint8_t  is_wide[BARCODE_CHAR_ELEMENTS] = { 0u };
-    uint32_t w_min = 0xFFFFFFFFu;
-    uint32_t n_max = 0u;
+    uint32_t wide_bar_min = 0xFFFFFFFFu;
+    uint32_t narrow_bar_max = 0u;
+    uint32_t wide_space;
+    uint32_t narrow_space_max = 0u;
     uint16_t pat = 0u;
-    uint8_t  k, i;
+    uint8_t  k, i, best;
 
-    for (k = 0u; k < BARCODE_WIDE_PER_CHAR; k++) {
-        uint8_t best = BARCODE_CHAR_ELEMENTS;
-        for (i = 0u; i < BARCODE_CHAR_ELEMENTS; i++) {
+    /* bars: elements 0, 2, 4, 6, 8 - the 2 widest are wide */
+    for (k = 0u; k < 2u; k++) {
+        best = BARCODE_CHAR_ELEMENTS;
+        for (i = 0u; i < BARCODE_CHAR_ELEMENTS; i += 2u) {
             if (!is_wide[i] &&
                 (best == BARCODE_CHAR_ELEMENTS || elems[i] > elems[best])) {
                 best = i;
             }
         }
         is_wide[best] = 1u;
-        if (elems[best] < w_min) {
-            w_min = elems[best];
+        if (elems[best] < wide_bar_min) {
+            wide_bar_min = elems[best];
         }
     }
+    /* spaces: elements 1, 3, 5, 7 - the widest is wide */
+    best = 1u;
+    for (i = 3u; i < BARCODE_CHAR_ELEMENTS; i += 2u) {
+        if (elems[i] > elems[best]) {
+            best = i;
+        }
+    }
+    is_wide[best] = 1u;
+    wide_space = elems[best];
+
     for (i = 0u; i < BARCODE_CHAR_ELEMENTS; i++) {
         pat = (uint16_t)(pat << 1);
         if (is_wide[i]) {
             pat |= 1u;
-        } else if (elems[i] > n_max) {
-            n_max = elems[i];
+        } else if ((i & 1u) == 0u) {
+            if (elems[i] > narrow_bar_max) {
+                narrow_bar_max = elems[i];
+            }
+        } else {
+            if (elems[i] > narrow_space_max) {
+                narrow_space_max = elems[i];
+            }
         }
     }
 
-    if (!at_least_split_ratio(w_min, n_max)) {
-        return 0u; /* 3rd and 4th widest too close: ambiguous */
+    if (!at_least_split_ratio(wide_bar_min, narrow_bar_max) ||
+        !at_least_split_ratio(wide_space, narrow_space_max)) {
+        return 0u; /* a group does not split cleanly: ambiguous */
     }
     *pattern9 = (uint16_t)(pat & 0x1FFu);
-    *min_wide = w_min;
+    *min_wide = wide_space;
     return 1u;
 }
 

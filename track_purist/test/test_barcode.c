@@ -1048,5 +1048,37 @@ int main(void)
               "H: VALID exactly 2 ms after the last edge");
     }
 
+    /* I) 20 Nov: bar growth. A sensor that sees black early makes every
+          bar longer and every space shorter by g. The old rule failed above
+          g = 0.6 x narrow; bars-vs-bars / spaces-vs-spaces must read every
+          letter up to g = 0.8 x narrow, forwards and backwards, and the
+          same with bars shrunk. */
+    {
+        int ok_grow = 1, ok_shrink = 1, ok_rev = 1, no_guess = 1;
+        uint8_t l;
+        for (l = 0; l < BARCODE_LETTER_COUNT; l++) {
+            uint32_t f[BARCODE_FRAME_ELEMENTS], g[BARCODE_FRAME_ELEMENTS], r[BARCODE_FRAME_ELEMENTS];
+            uint32_t i, d = (NARROW * 8u) / 10u;
+            barcode_t b;
+            build_frame(T_STAR, barcode_letter_pattern(l), T_STAR, f);
+            for (i = 0; i < BARCODE_FRAME_ELEMENTS; i++) g[i] = (i % 2u == 0u) ? f[i] + d : f[i] - d;
+            b = barcode_decode_frame(g);
+            if (!barcode_is_valid(b) || barcode_get_letter(b) != l) ok_grow = 0;
+            reverse_frame(g, r);
+            b = barcode_decode_frame(r);
+            if (!barcode_is_valid(b) || barcode_get_letter(b) != l) ok_rev = 0;
+            for (i = 0; i < BARCODE_FRAME_ELEMENTS; i++) g[i] = (i % 2u == 0u) ? f[i] - d : f[i] + d;
+            b = barcode_decode_frame(g);
+            if (!barcode_is_valid(b) || barcode_get_letter(b) != l) ok_shrink = 0;
+            /* a wide bar squeezed to 1.2 x narrow is ambiguous: never guessed */
+            for (i = 0; i < BARCODE_FRAME_ELEMENTS; i++) g[i] = (f[i] == WIDE && (i % 2u == 0u)) ? (NARROW * 12u) / 10u : f[i];
+            if (barcode_is_valid(barcode_decode_frame(g))) no_guess = 0;
+        }
+        CHECK(ok_grow,   "I: every letter reads with bars grown by 0.8 x narrow");
+        CHECK(ok_rev,    "I: same, scanned backwards");
+        CHECK(ok_shrink, "I: every letter reads with bars shrunk by 0.8 x narrow");
+        CHECK(no_guess,  "I: wide bars at 1.2 x narrow stay INVALID");
+    }
+
     return TEST_SUMMARY();
 }

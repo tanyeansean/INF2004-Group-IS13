@@ -146,6 +146,29 @@ EXPORT UH drv_track_read_right(void) { return adc_read(S3_ADC_CH_RIGHT); }
 #define S3_INTNO_TIMER3		(3U)		/* TIMER_IRQ_3 */
 #define S3_SAMPLE_US		(500U)
 #define S3_SAMPLE_STABLE	(2U)	/* samples a new level must hold */
+/*
+ * 19 Nov (Aurelius, PC model in testing/subsystem3/pc/barsim.c): the IR
+ * module's comparator has no hysteresis, so while the spot crosses a bar
+ * edge GP7 chatters for as long as the reflectance sits near the
+ * threshold. At line-follow speed (~65 mm/s) that is tens of ms, not us.
+ * The car logs show it: "irq22336 smp24" = 22,336 GP7 edges for 24 real
+ * changes, and INVALID frames with 2-3 ms "elements". Two equal samples in
+ * a row happen by chance inside that chatter, so extra edges reached the
+ * decoder: 30-edge barcodes arrived as 40-160 edges and read INVALID, and
+ * worse the SLOWER the car went.
+ *
+ * S3_SAMPLE_INTEG > 0 replaces the 2-sample rule with an up/down counter
+ * (0..S3_SAMPLE_INTEG): +1 per sample that reads 1, -1 per sample that
+ * reads 0. The level only changes when the counter reaches the other end,
+ * so chatter has to become a clear majority first. 8 = 4 ms: the narrowest
+ * bar (3 mm) is 46 ms at 65 mm/s and 7.5 ms at 400 mm/s, so nothing real
+ * is lost. Model: 26 letters x 8 passes, noisy comparator, 65 mm/s:
+ * 2-sample rule 9..195 of 208 read; counter 8: 208 of 208, 0 wrong.
+ * Set to 0 for the old 2-sample rule.
+ */
+#ifndef S3_SAMPLE_INTEG
+#define S3_SAMPLE_INTEG		(8U)
+#endif
 
 EXPORT volatile UW	s3_bar_src = S3_BAR_SRC_SAMPLER;
 EXPORT volatile UW	s3_bar_raw_changes = 0U;	/* GP7 changed at all (before debounce) */
@@ -237,6 +260,38 @@ LOCAL void timer3_inthdr(UINT intno)
 		s_raw_level = level;
 		s3_bar_raw_changes++;
 	}
+#if (S3_SAMPLE_INTEG > 0U)
+	{
+		static UW	acc = 0U;	/* 0..S3_SAMPLE_INTEG           */
+		static BOOL	primed = FALSE;	/* acc started at the idle level */
+
+		(void)cand_n;
+		(void)cand_us;
+		if (!primed) {
+			acc    = (s_samp_level != 0U) ? S3_SAMPLE_INTEG : 0U;
+			primed = TRUE;
+		}
+		if (level != 0U) {
+			if (acc < S3_SAMPLE_INTEG) { acc++; }
+		} else {
+			if (acc > 0U) { acc--; }
+		}
+		if (((acc == S3_SAMPLE_INTEG) && (s_samp_level == 0U)) ||
+		    ((acc == 0U) && (s_samp_level != 0U))) {
+			s_samp_level = (s_samp_level != 0U) ? 0U : 1U;
+			s3_bar_samp_changes++;
+			if (s3_bar_src == S3_BAR_SRC_SAMPLER) {
+				/* The counter lags a clean edge by S3_SAMPLE_INTEG
+				   samples; half of that is the best estimate inside
+				   chatter. Same offset on every edge, so widths are
+				   unchanged. */
+				push_if_changed(s_samp_level,
+						now - ((S3_SAMPLE_INTEG * S3_SAMPLE_US) / 2U));
+			}
+		}
+		return;
+	}
+#endif
 	if (level == s_samp_level) {
 		cand_n = 0U;
 		return;
