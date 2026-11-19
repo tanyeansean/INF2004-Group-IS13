@@ -22,6 +22,7 @@
 #include "s5_hw.h"
 
 #define US_PER_MS	(1000U)
+#define OA_Q15_ONE	(32767)	/* sin(90 deg) in oa_sin_q15() */
 #define OA_PROBE_PERIOD_MS	(80U)
 
 #if (OA_PROBE_PIN >= 0)
@@ -621,6 +622,9 @@ LOCAL s5_state_t oa_state_plan(void)
  * and search once more for OA_SEEK_MAX_CM; leg 7 then expects 90 deg.
  * Forward legs keep pinging ahead.
  */
+#if (OA_TURN_OUT_DEG < 1U) || (OA_TURN_OUT_DEG > 89U)
+#error "OA_TURN_OUT_DEG must be 1..89: the out leg is sidestep / sin(OUT)."
+#endif
 #if (OA_TURN_IN_DEG < 1U) || (OA_TURN_IN_DEG > 90U)
 #error "OA_TURN_IN_DEG must be 1..90: the second search squares up with 90 - OA_TURN_IN_DEG."
 #endif
@@ -634,9 +638,33 @@ LOCAL s5_state_t oa_state_bypass(void)
 	motor_mode_t const	turn_back = b_left ? MCMD_TURN_RIGHT : MCMD_TURN_LEFT;
 	UW const		side_cm = (s_ctx.sidestep_cm == (uint8_t)OA_DIST_OUT_OF_RANGE)
 					? OA_DEFAULT_SIDESTEP_CM : (UW)s_ctx.sidestep_cm;
-	UW const		diag_cm = (side_cm * 141U) / 100U;	/* x sqrt(2) */
-	UW const		ahead_cm = ((UW)s_ctx.prof.closest_cm > side_cm)
-					 ? ((UW)s_ctx.prof.closest_cm - side_cm) : 0U;
+	/* Bypass geometry from the turn angles (Q15 sines, integer only).
+	   A diagonal of length L at angle A to the line moves L*sin(A)
+	   sideways and L*cos(A) forward, so for a sidestep S:
+	     out leg      = S / sin(OUT)      (45: 1.41 S, 60: 1.15 S)
+	     forward gain = S * cos/sin(OUT)  (45: 1.00 S, 60: 0.58 S)
+	     return leg   = S / sin(IN)       (line search distance)  */
+	W const			sin_out = oa_sin_q15((W)OA_TURN_OUT_DEG);
+	W const			cos_out = oa_sin_q15(90 - (W)OA_TURN_OUT_DEG);
+	W const			sin_in  = oa_sin_q15((W)OA_TURN_IN_DEG);
+	W const			cos_in  = oa_sin_q15(90 - (W)OA_TURN_IN_DEG);
+	UW const		diag_cm = (UW)((((W)side_cm * OA_Q15_ONE) + (sin_out / 2)) / sin_out);
+	UW const		fwd_out_cm = (UW)((((W)side_cm * cos_out) + (sin_out / 2)) / sin_out);
+	UW const		back_cm = (UW)((((W)side_cm * OA_Q15_ONE) + (sin_in / 2)) / sin_in);
+	/* Distance from the car, once parallel, to the obstacle's front. */
+	UW const		ahead_cm = ((UW)s_ctx.prof.closest_cm > fwd_out_cm)
+					 ? ((UW)s_ctx.prof.closest_cm - fwd_out_cm) : 0U;
+	/* OA_PASS_EXTRA_CM was tuned with a 45 deg return. Coming back at
+	   IN deg, the car's inner side closes the planned side gap
+	   (OA_SIDE_MARGIN_CM + OA_SIDESTEP_EXTRA_CM) after gap * cot(IN) of
+	   forward travel instead of gap * cot(45) = gap: a steeper return
+	   reaches the obstacle's back corner sooner, so pass further by the
+	   difference to keep the same clearance (60 deg: +6 cm). */
+	W const			gap_cm = (W)(OA_SIDE_MARGIN_CM + OA_SIDESTEP_EXTRA_CM);
+	W const			pass_adj = (gap_cm * (OA_Q15_ONE - ((cos_in * OA_Q15_ONE) / sin_in)))
+					 / OA_Q15_ONE;
+	W const			pass_w = (W)ahead_cm + (W)OA_PASS_EXTRA_CM + pass_adj;
+	UW const		pass_cm = (pass_w > 0) ? (UW)pass_w : 0U;
 	oa_leg_t		legs[5];
 	oa_move_result_t	r = OA_MOVE_DONE;
 	UB			align_deg = (UB)OA_TURN_IN_DEG;
@@ -645,9 +673,15 @@ LOCAL s5_state_t oa_state_bypass(void)
 	legs[0].mode = turn_out;      legs[0].param = (UB)OA_TURN_OUT_DEG; legs[0].b_watch = FALSE;
 	legs[1].mode = MCMD_FWD_DIST; legs[1].param = oa_clamp_cm(diag_cm); legs[1].b_watch = TRUE;
 	legs[2].mode = turn_back;     legs[2].param = (UB)OA_TURN_OUT_DEG; legs[2].b_watch = FALSE;
-	legs[3].mode = MCMD_FWD_DIST; legs[3].param = oa_clamp_cm(ahead_cm + OA_PASS_EXTRA_CM);
+	legs[3].mode = MCMD_FWD_DIST; legs[3].param = oa_clamp_cm(pass_cm);
 	legs[3].b_watch = TRUE;
 	legs[4].mode = turn_back;     legs[4].param = (UB)OA_TURN_IN_DEG;  legs[4].b_watch = FALSE;
+
+#if OA_DEBUG
+	tm_printf((UB *)"[S5 dbg] bypass %s: side=%u out=%u (fwd %u) pass=%u back=%u, turns %u/%u deg\n",
+		  b_left ? "LEFT" : "RIGHT", (UINT)side_cm, (UINT)diag_cm, (UINT)fwd_out_cm,
+		  (UINT)pass_cm, (UINT)back_cm, (UINT)OA_TURN_OUT_DEG, (UINT)OA_TURN_IN_DEG);
+#endif
 
 	/* Stage 4: around the obstacle. */
 	for (i = 0U; i < (sizeof(legs) / sizeof(legs[0])); i++) {
@@ -658,7 +692,7 @@ LOCAL s5_state_t oa_state_bypass(void)
 	}
 
 	/* Stage 5: line recovery. */
-	r = oa_move(MCMD_FWD_TO_LINE, oa_clamp_cm(diag_cm * OA_SEEK_FACTOR), TRUE);
+	r = oa_move(MCMD_FWD_TO_LINE, oa_clamp_cm(back_cm * OA_SEEK_FACTOR), TRUE);
 	if (r == OA_MOVE_DONE) {
 		/* Missed it: turn the rest of the way to square to the line
 		   (90 - OA_TURN_IN_DEG) and look once more. At 90 there is

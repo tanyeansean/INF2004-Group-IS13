@@ -119,11 +119,15 @@
 /* S5 plans every leg; Mission Control drives each one (motion_q) and its
    open-loop distance / angle calibration decides how accurate they are. */
 #define OA_REVERSE_CM		(15U)	/* TUNE: back off this far, then rescan.  */
-#define OA_TURN_OUT_DEG		(45U)	/* Leave the line at 45 deg.               */
+/* TUNE: leave the line at this angle (spin speed is AV_TURN_PWM in
+   Mission Control, unchanged). 60 = sharper than the old 45, so less
+   forward travel per cm of sidestep. Every bypass distance is worked
+   out from these angles in oa_state_bypass(). 1..89. */
+#define OA_TURN_OUT_DEG		(60U)
 /* TUNE: turn back toward the line after passing the obstacle. Leg 7
-   turns back the same amount to run along the line again. 45 = the
-   same as OA_TURN_OUT_DEG (was 60 for a while; back to 45). 1..90. */
-#define OA_TURN_IN_DEG		(45U)
+   turns back the same amount to run along the line again. Same as
+   OA_TURN_OUT_DEG (60) so the return mirrors the way out. 1..90. */
+#define OA_TURN_IN_DEG		(60U)
 /* How far the front IR line sensors sit ahead of the drive-wheel axle,
    in cm: about 10, measured by Joe (the two sensors are about 1 cm
    apart). After the line search finds the line, the car drives this much
