@@ -187,7 +187,7 @@
   </div>
 
   <section>
-    <h2>Run summary</h2>
+    <h2>Run summary <span id="sumlive" class="pill" style="text-transform:none;letter-spacing:0;margin-left:6px">-</span></h2>
     <div id="sum" class="sum"><span class="muted">sent by the car at the end of every run - none yet</span></div>
     <div id="sumcheck" class="check muted" style="margin-top:6px"></div>
   </section>
@@ -425,6 +425,8 @@ function showSummary(s) {
     ['Junctions', f.n_junction + (f.n_unmapped ? `, ${f.n_unmapped} unmapped` : '')],
     ['Faults', f.faults_seen ? '0x' + f.faults_seen.toString(16).padStart(4, '0') : 'none']];
   $('sum').innerHTML = items.map(([k, v]) => `<div><span class="muted">${k}</span><br><b>${v}</b></div>`).join('');
+  $('sumlive').textContent = s.text.includes('so far') ? 'LIVE · updates every second' : 'final';
+  $('sumlive').className = 'pill ' + (s.text.includes('so far') ? 'ok' : '');
   const c = $('sumcheck');
   c.textContent = 'Check against the raw events: ' + s.check;
   c.className = 'check ' + (s.check.startsWith('matches') ? 'ok' : (s.check.startsWith('DIFFERS') ? 'bad' : 'muted'));
@@ -466,7 +468,12 @@ function apply(kind, d) {
       $('cal').innerHTML = 'Not calibrating<small>The car said no: it is driving, or still calibrating. Wait a few seconds and press again.</small>';
     }
   }
-  else if (kind === 'summary') { showSummary(d); addLog('ev', 'run summary: ' + d.text + ' | ' + d.check); }
+  else if (kind === 'summary') {
+    showSummary(d);
+    // the car sends a "so far" summary every second while running (Jin, 19 Nov):
+    // log only the final one
+    if (!d.text.includes('so far')) addLog('ev', 'run summary: ' + d.text + ' | ' + d.check);
+  }
   else if (kind === 'barcode') showBarcode(d);
   else if (kind === 'obstacle') showObstacle(d);
   else if (kind === 'hump') showHump(d);

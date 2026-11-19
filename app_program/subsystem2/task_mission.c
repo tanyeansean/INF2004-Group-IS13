@@ -312,6 +312,67 @@ LOCAL void jn_move(jn_phase_t phase, H left, H right, W target_um)
 	motor_set(left, right);
 }
 
+/* Rescan reverse that follows the line (Jin, 19 Nov). Before, the
+   reverse only held both wheels even and ignored the line, so it could
+   end beside the line. Now: the same wheel-difference hold as before
+   (it keeps the heading: steering on sensors that trail behind the
+   wheels, as they do when reversing, wobbles more and more on its own),
+   plus a gentle turn toward the line when only one front sensor is on
+   black, the same direction as forward line following (line under the
+   left sensor -> turn left). Both sensors white for JN_REV_LOST_MS:
+   the line is lost, stop instead of reversing off the track. */
+#define JN_REV_STEER_PWM	10	/* TUNE: line correction while reversing */
+#define JN_REV_LOST_MS		600U	/* both white this long = line lost */
+LOCAL UW	g_jn_rev_white_ms;	/* when both sensors went white, 0 = not */
+
+LOCAL BOOL jn_reverse_follow(W prog_l, W prog_r)
+{
+	W	hold = 0;
+	W	steer = 0;
+	W	mag_l;
+	W	mag_r;
+	UW const t = now_ms();
+
+#if ENC_RIGHT_ENABLED
+	hold = (prog_l - prog_r) / JN_HOLD_COUNTS_PER_PWM;
+	if (hold > JN_HOLD_MAX_PWM)  { hold = JN_HOLD_MAX_PWM; }
+	if (hold < -JN_HOLD_MAX_PWM) { hold = -JN_HOLD_MAX_PWM; }
+#else
+	(void)prog_l;
+	(void)prog_r;
+#endif
+	if (g_lb && !g_rb) {
+		steer = JN_REV_STEER_PWM;	/* line under the left sensor: turn left */
+	} else if (g_rb && !g_lb) {
+		steer = -JN_REV_STEER_PWM;
+	} else {
+		steer = 0;			/* centred, crossing, or in the gap */
+	}
+#if STEER_INVERT
+	steer = -steer;
+#endif
+	if (!g_lb && !g_rb) {
+		if (g_jn_rev_white_ms == 0U) {
+			g_jn_rev_white_ms = t | 1U;
+		} else if ((t - g_jn_rev_white_ms) >= JN_REV_LOST_MS) {
+			return FALSE;		/* line lost */
+		} else {
+			/* briefly white: carry on */
+		}
+	} else {
+		g_jn_rev_white_ms = 0U;
+	}
+	/* Reversing, both wheels run backwards. Turning left (CCW) while
+	   reversing = the right wheel goes back slower than the left. The
+	   hold slows whichever wheel is ahead, as in jn_hold_straight(). */
+	mag_l = (W)g_jn_pwm - hold + steer;
+	mag_r = (W)g_jn_pwm + hold - steer;
+	mag_l = (mag_l < 0) ? 0 : mag_l;
+	mag_r = (mag_r < 0) ? 0 : mag_r;
+	motor_set((H)-mag_l, (H)-mag_r);
+	return TRUE;
+}
+
 LOCAL void jn_pause(jn_phase_t phase)
 {
 	motor_set(0, 0);
@@ -425,6 +486,7 @@ LOCAL void maneuver_step(void)
 	case JN_PAUSE_IN:
 		if ((W)(t - g_jn_until_ms) >= 0) {
 			if (g_jn_rescan) {
+				g_jn_rev_white_ms = 0U;	/* Jin, 19 Nov */
 				jn_move(JN_REVERSE, (H)-JN_DRIVE_PWM, (H)-JN_DRIVE_PWM,
 					g_jn_rescan_um);
 			} else {
@@ -465,6 +527,10 @@ LOCAL void maneuver_step(void)
 #endif
 		} else if ((t - g_jn_begin_ms) >= JN_MOVE_CAP_MS) {
 			jn_fail("move took too long");
+		} else if (g_jn_phase == JN_REVERSE) {
+			if (!jn_reverse_follow(pl, pr)) {	/* Jin, 19 Nov */
+				jn_fail("line lost while reversing");
+			}
 		} else if (g_jn_straight) {
 			jn_hold_straight(pl, pr);
 		} else {
@@ -1287,6 +1353,31 @@ LOCAL void on_line(line_err_t le)
 	}
 }
 
+/* Lifted / overturned fault, cleared once the car is down again (Jin,
+   19 Nov). S4 sets fault bit 2 when the car is picked up or tipped over;
+   only Mission Control clears fault bits, and until now only START did,
+   so the dashboard kept showing "lifted or overturned" after the car was
+   simply carried back to the start. Now, while the car is stopped
+   (CAR_IDLE) and S4 reports it ON THE FLOOR again, the bit is cleared.
+   While driving nothing changes: a lift still stops the car and stays
+   shown until START. */
+LOCAL void lift_fault_clear(void)
+{
+	T_RFLG	rflg;
+
+	if (g_mode != CAR_IDLE) {
+		return;
+	}
+	if ((tk_ref_flg(flg_faults, &rflg) != E_OK) ||
+	    ((rflg.flgptn & FAULT_BIT_COLLISION) == 0U)) {
+		return;
+	}
+	if (s4_report_lift(s4_report()) == 0U) {	/* TERRAIN_ON_FLOOR */
+		(void)tk_clr_flg(flg_faults, ~(UINT)FAULT_BIT_COLLISION);
+		tm_printf((UB *)"[car] back on the floor - lifted/overturned fault cleared\n");
+	}
+}
+
 EXPORT void mission_task(INT stacd, void *exinf)
 {
 	line_err_t	le = line_err_pack(0, 0U, 1U);
@@ -1324,6 +1415,7 @@ EXPORT void mission_task(INT stacd, void *exinf)
 			on_command(cmd);
 		}
 		button_poll(t);
+		lift_fault_clear();	/* Jin, 19 Nov */
 
 #if APP_WITH_S5
 		poll_obstacles();	/* before the line: a stop wins over steering */

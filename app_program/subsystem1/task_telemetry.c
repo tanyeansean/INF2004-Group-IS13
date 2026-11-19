@@ -98,7 +98,12 @@ LOCAL void update_imu(void)
 		humps_seen = humps;
 	} else if (humps != humps_seen) {
 		humps_seen = humps;
-		telem_event_hump((float)s4_report_last_hump_mm(r) / 10.0f);
+		/* Only while the car is driving (Jin, 19 Nov): carrying or
+		   placing the car made "humps" (2.7 cm at 21:31, car idle),
+		   which then stayed as the dashboard's highest hump. */
+		if (g_b_running) {
+			telem_event_hump((float)s4_report_last_hump_mm(r) / 10.0f);
+		}
 	} else {
 		/* no new hump */
 	}
@@ -147,6 +152,9 @@ LOCAL void on_state(robot_state_t st)
 		   this moment (it showed a lift from BEFORE Start, 19 Nov). */
 		s2_odom_get(&o);
 		g_dist_base_mm = odom_centre_mm(&o);
+		/* New run: the dashboard's highest hump starts again, as S4's
+		   own does (s4_new_run at START). Jin, 19 Nov. */
+		telem_reset_peak();
 		update_faults();
 		update_motion();
 	}
@@ -170,6 +178,29 @@ LOCAL void update_obstacle(void)
 		p.action         = (m.plan <= (UB)AVOID_REVERSE) ? (avoid_action_t)m.plan
 								  : AVOID_STOP;
 		telem_event_obstacle(&p);
+	}
+}
+
+/* Live run summary (added 19 Nov by Jin). The summary used to be sent
+   only when a run ended (or on the dashboard's "Summary now"), so during
+   a run its humps, obstacles, barcodes etc. lagged behind the live tiles
+   (car test 19 Nov: highest hump 1.1 cm shown live, summary "Humps 0"
+   until STOP). While the car runs, send the "so far" summary every
+   S1_LIVE_SUMMARY_MS. It is the same summary the run ends with, built
+   from the same counters, so the live view and the final one agree. */
+#define S1_LIVE_SUMMARY_MS	1000U
+
+LOCAL void update_live_summary(void)
+{
+	static uint32_t	last_ms = 0U;
+	uint32_t const	t = s1_now_ms();
+
+	if (!g_b_running) {
+		return;
+	}
+	if ((t - last_ms) >= S1_LIVE_SUMMARY_MS) {
+		last_ms = t;
+		telem_publish_summary();
 	}
 }
 
@@ -231,6 +262,7 @@ EXPORT void telemetry_task(INT stacd, void *exinf)
 		update_imu();
 		update_motion();		/* Jin, 19 Nov */
 		update_obstacle();		/* Jin, 19 Nov */
+		update_live_summary();		/* Jin, 19 Nov */
 		comms_poll();
 		telem_poll();
 		(void)tk_set_flg(flg_hb, HB_TELEMETRY);
