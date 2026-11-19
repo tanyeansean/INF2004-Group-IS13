@@ -287,6 +287,7 @@ LOCAL void timer3_inthdr(UINT intno)
 		static W	prev_l = 0, prev_r = 0;
 		static BOOL	have_prev = FALSE;
 		static UW	rem = 0U;
+		static W	pend = 0;	/* signed travel not yet counted, Q8 counts */
 		W		cl, cr, dl, dr, ds;
 
 		drv_encoder_read(&cl, &cr);
@@ -301,12 +302,18 @@ LOCAL void timer3_inthdr(UINT intno)
 		(void)dr;
 		ds = dl * 256;
 #endif
-		if (ds < 0) {
-			ds = -ds;
+		/* Sum with the SIGN first and only count whole encoder steps.
+		   The first version took |ds| on every 0.5 ms tick: the left
+		   and right counts rarely land on the same tick, so the
+		   "- right" part was counted as "+ right" and the clock ran
+		   up to 4x wrong while weaving (clock_test.c, 20 Nov 03:05). */
+		pend += ds;
+		if ((pend >= 256) || (pend <= -256)) {
+			rem += (UW)((pend < 0) ? -pend : pend) * 820U;	/* counts x 82 um x 10, Q8 */
+			s_bar_clock += rem >> 8;
+			rem &= 0xFFU;
+			pend = 0;
 		}
-		rem += (UW)ds * 820U;		/* counts x 82 um x 10, Q8 */
-		s_bar_clock += rem >> 8;
-		rem &= 0xFFU;
 	}
 #endif
 
