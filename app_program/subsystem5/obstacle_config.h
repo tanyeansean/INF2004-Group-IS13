@@ -43,14 +43,38 @@
    Keep above OA_DIST_MIN_VALID_CM (checked in drv_hcsr04.c). */
 #define OA_STOP_DIST_CM		(20U)
 #define OA_CONFIRM_COUNT	(2U)	/* Consecutive readings to confirm.       */
+/* Width test (added 19 Nov by Jin, task_obstacle.c oa_width_test): 1 = the
+   servo sweeps every OA_WIDTH_TEST_PERIOD_MS whatever is in front and
+   prints the scan + width; no stopping or avoiding.  TEST BUILDS ONLY. */
+#ifndef OA_WIDTH_TEST
+#define OA_WIDTH_TEST		(0)
+#endif
+#define OA_WIDTH_TEST_PERIOD_MS	(4000U)
 
 /* ---------------------------------------------------------------- Servo */
-#define OA_SERVO_CENTRE_DEG	(90U)
-/* Sweep limited to centre +/- 30 deg (was +/- 25 until the mount was
-   widened): no room for more. Every commanded angle is clamped to this range. Widen these (and
-   the coarse scan below) once the mount allows it. */
-#define OA_SERVO_MIN_DEG	(60U)	/* centre - 30: mount widened by 5 deg */
-#define OA_SERVO_MAX_DEG	(120U)	/* centre + 30                       */
+/* The servo angle at which the sensor points STRAIGHT AHEAD. 90 -> 100
+   (Jin, 19 Nov): the sensor sits a little tilted to the right on its
+   mount (Jin), and the width test agreed: a centred 10 cm box at 20 cm
+   showed up from ~27 deg right to ~47 deg left of 90, i.e. about 10 deg
+   lopsided. 100 points it straight (angle > 90 = left). Every sideways
+   calculation (obstacle_profile.c) measures angles from here, and the
+   straight-ahead pings while driving use it. TUNE: a centred box should
+   give a scan that is even on both sides. */
+#define OA_SERVO_CENTRE_DEG	(100U)
+/* Sweep: every commanded servo angle is clamped to this range.
+   +/- 30 -> +/- 60 -> +/- 55 (Jin, 19 Nov) around the servo's own middle
+   (90). The sensor is on a ~2 cm arm now; at +/- 30 a 15 cm box filled
+   the whole sweep from ~40 cm (width test 19 Nov), so its edges were
+   never seen and the car kept reversing. With straight ahead at 100,
+   this sees 65 deg to the right and 45 deg to the left. */
+#define OA_SERVO_MIN_DEG	(35U)	/* servo middle - 55 */
+#define OA_SERVO_MAX_DEG	(145U)	/* servo middle + 55 */
+/* How far the sensor face sits out from the servo's turning point (Jin,
+   19 Nov: moved out by about 2 cm; before, the code took it as 0). Added
+   to every reading in oa_ping(), so all distances are from the turning
+   point. MEASURE: if the face was already ahead of the turning point
+   before the change, set the whole distance here. */
+#define OA_SENSOR_ARM_CM	(2U)
 #define OA_SERVO_PULSE_MIN_US	(500U)	/* TUNE: pulse at 0 deg.                  */
 #define OA_SERVO_PULSE_MAX_US	(2500U)	/* TUNE: pulse at 180 deg.                */
 #define OA_SERVO_MS_PER_DEG	(2U)	/* SG90 ~0.1 s / 60 deg = 1.7 ms/deg.     */
@@ -76,16 +100,36 @@
 #endif
 
 /* ---------------------------------------------------------------- Scanning */
-/* 60, 70, ... 120 deg. 10 deg steps are finer than the ~15 deg
-   beam, so the coarse scan leaves no blind gaps inside the narrow sweep. */
-#define OA_COARSE_START_DEG	(60U)
+/* 35, 45, ... 145 deg (was 60..120, Jin 19 Nov: wider sweep). 10 deg
+   steps are finer than the ~15 deg beam, so the coarse scan leaves no
+   blind gaps. */
+#define OA_COARSE_START_DEG	(35U)
 #define OA_COARSE_STEP_DEG	(10U)
-#define OA_COARSE_COUNT		(7U)
+#define OA_COARSE_COUNT		(12U)
 #define OA_FINE_STEP_DEG	(5U)	/* TUNE: 1 deg was tried: ~5 s per scan,
 					   no better edges (the wide beam blurs
 					   them), and more lone no-echo misses
 					   splitting the obstacle. Back to 5.     */
 #define OA_FINE_MARGIN_DEG	(15U)	/* TUNE: scan this far past coarse hits.  */
+
+/* Half the ultrasonic beam, MEASURED on the car (Jin, 19 Nov, 10 cm box,
+   v14 width test: the box was still seen this far past its corners).
+   Used by the width and edge maths in obstacle_profile.c in place of
+   OA_TAN_HALF_BEAM_Q15 (7.5 deg). ~20 deg at 18 and 34 cm; ~31 deg at
+   48 cm, so it grows by OA_BEAM_GROW_PER_CM_X100 / 100 deg per cm beyond
+   OA_BEAM_GROW_FROM_CM. TUNE: re-measure if the sensor or mount changes. */
+/* 20 -> 14 (Jin, 19 Nov evening): how far the beam "sees past" an edge
+   depends on the obstacle. The flat 10 cm box gave ~20 deg, a makeshift
+   10 cm obstacle only ~10 deg, so 20 read it as 3-5 cm. 14 is in between
+   and errs WIDE: replaying the recorded scans, the makeshift one reads
+   7-9 cm and the flat box 15-22 cm (true 10 for both). Reading an
+   obstacle too narrow is the dangerous side (the car passes closer). */
+#ifndef OA_BEAM_HALF_DEG
+#define OA_BEAM_HALF_DEG	(14U)
+#endif
+#define OA_BEAM_GROW_FROM_CM	(35U)
+#define OA_BEAM_GROW_PER_CM_X100 (85U)
+#define OA_BEAM_HALF_MAX_DEG	(45U)
 
 #if (OA_COARSE_START_DEG < OA_SERVO_MIN_DEG) || \
     ((OA_COARSE_START_DEG + ((OA_COARSE_COUNT - 1U) * OA_COARSE_STEP_DEG)) > OA_SERVO_MAX_DEG)
@@ -132,16 +176,26 @@
    in cm: about 10, measured by Joe (the two sensors are about 1 cm
    apart). After the line search finds the line, the car drives this much
    further so the axle is on the line before it swings round onto it
-   (see oa_state_bypass). 0 = no overrun. */
-#define OA_IR_AHEAD_CM		(10U)
+   (see oa_state_bypass). 0 = no overrun.
+   10 -> 13 (Jin, 19 Nov): Jin measured wheel centre to the front of the
+   IR sensor boards with calipers on 17 Nov: 135 mm, and the 17 Nov
+   bypass that rejoined the line used 135 mm.  The sensor eyes sit a
+   little behind the board edge, so 13.  Joe: re-measure if unsure. */
+#define OA_IR_AHEAD_CM		(13U)
 /* TUNE: lining up with the line (leg 7) spins until the IR sensor on the
    turning side sees black. Expected: OA_TURN_IN_DEG (90 after a second
    search). Give up and raise NO_LINE this many degrees past that.
    90 + this must fit in 7 bits (checked in task_obstacle.c). */
 #define OA_ALIGN_EXTRA_DEG	(30U)
+/* Lining up, second try (Jin, 19 Nov): if the first spin did not find the
+   line, spin on the same way up to this many more degrees (sharp bend in
+   the bypass direction just after the obstacle). Must fit in 7 bits. */
+#define OA_ALIGN_RETRY_DEG	(90U)
 #define OA_DEFAULT_SIDESTEP_CM	(20U)	/* If the profile gives none (255).        */
-#define OA_PASS_EXTRA_CM	(25U)	/* TUNE: obstacle depth + car length: drive
-					   this far past the obstacle's front.   */
+#define OA_PASS_EXTRA_CM	(20U)	/* TUNE: obstacle depth + car length: drive
+					   this far past the obstacle's front.
+					   25 -> 20 (Jin, 19 Nov): a shorter
+					   parallel leg after the car tests.     */
 #define OA_SEEK_FACTOR		(2U)	/* Look for the line up to 2x the expected
 					   distance before the second search.    */
 #define OA_SEEK_MAX_CM		(40U)	/* TUNE: second search, square to the line. */

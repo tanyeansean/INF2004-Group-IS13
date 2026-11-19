@@ -47,6 +47,7 @@
 #define CAL_GAP_MS		30
 #define STATUS_EVERY		100	/* status line every 100 reads = 1 s */
 #define FAIL_LIMIT		10	/* failed reads in a row = 100 ms: sensor lost */
+#define IMU_RETRY_READS		100U	/* while lost: restart the sensor every ~1 s (19 Nov) */
 #define TERRAIN_MSGS		4U	/* messages mbf_terrain can hold */
 
 /* 1 = stop the motors when the car is lifted or overturned (the
@@ -87,6 +88,7 @@ LOCAL BOOL	stop_pending = FALSE;	/* a stop command still has to be sent */
 #endif
 
 EXPORT volatile UW	s4_report_word = 0U;	/* latest report (subsystem4.h) */
+EXPORT volatile UW	s4_status_word = S4_ST_CALIBRATING;	/* for s4_start_ok() */
 LOCAL volatile UW	new_run_req = 0U;	/* s4_new_run() was called */
 
 /* Wheel data: a copy of Sean's odometry, and whether it is still arriving */
@@ -189,6 +191,7 @@ LOCAL void sensor_start(void)
 {
 	while (drv_imu_init() < E_OK) {
 		(void)tk_set_flg(flg_faults, FAULT_BIT_IMU_FAULT);
+		s4_status_word = S4_ST_NO_SENSOR;
 		tm_printf((UB *)"[imu] GY-511 not found at 0x1D - check wiring\n");
 		wait_ms(1000U);
 	}
@@ -404,15 +407,20 @@ EXPORT void terrain_task(INT stacd, void *exinf)
 	(void)stacd; (void)exinf;
 
 	sensor_start();
+	s4_status_word = S4_ST_CALIBRATING;	/* the sensor answers: START waits */
 	wait_for_line_calibration();
 	/* A bad calibration (sensor not ready, loose wire) is retried after
-	   restarting the sensor, with the IMU fault bit set meanwhile. */
+	   restarting the sensor, with the IMU fault bit set meanwhile.  The
+	   car may be started without the IMU from then on (s4_start_ok). */
 	while (!calibrate(&x, &y, &z)) {
 		(void)tk_set_flg(flg_faults, FAULT_BIT_IMU_FAULT);
+		s4_status_word = S4_ST_NO_SENSOR;
 		tm_printf((UB *)"[imu] FAULT: calibration is not about 1 g - restarting the sensor and trying again\n");
 		sensor_start();
 	}
 	terrain_init(&t, x, y, z);
+	s4_status_word = S4_ST_OK;
+	tm_printf((UB *)"[imu] ready: the car can be started\n");
 
 	tm_printf((UB *)"[imu] diag: watchdog TICK register 0x%x (cycles %u, should be 12)\n",
 		  (UINT)in_w(S4_DIAG_WDT_TICK), (UINT)(in_w(S4_DIAG_WDT_TICK) & 0x1FFU));
@@ -450,7 +458,7 @@ EXPORT void terrain_task(INT stacd, void *exinf)
 				(void)tk_set_flg(flg_faults, S4_FAULT_LIFTED);
 			}
 			if (stop_pending) {
-				send_stop();
+				send_stop();	/* before the printing below */
 			}
 			if (ev != 0U) {
 				print_events(ev, &t);
@@ -467,14 +475,39 @@ EXPORT void terrain_task(INT stacd, void *exinf)
 			}
 			report_update(&t);
 			reads++;
+			if (fails_in_row >= FAIL_LIMIT) {
+				s4_status_word = S4_ST_OK;	/* the sensor is back */
+			}
 			fails_in_row = 0U;
 		} else {
 			fails++;
 			fails_in_row++;
 			if (fails_in_row == FAIL_LIMIT) {
 				(void)tk_set_flg(flg_faults, FAULT_BIT_IMU_FAULT);
+				s4_status_word = S4_ST_NO_SENSOR;
 				tm_printf((UB *)"[imu] FAULT: sensor stopped answering\n");
+			} else if (fails_in_row > FAIL_LIMIT) {
+				/* Still not answering: keep the bit set, because
+				   START now clears it (19 Nov) and a dead sensor
+				   must still show as a fault in the new run. */
+				(void)tk_set_flg(flg_faults, FAULT_BIT_IMU_FAULT);
+				/* And restart it about once a second (19 Nov):
+				   bus clear + sensor reboot, see drv_imu_init().
+				   Before, a sensor lost while driving stayed lost
+				   until the car was switched off. */
+				if ((fails_in_row % IMU_RETRY_READS) == 0U) {
+					if (drv_imu_init() >= E_OK) {
+						tm_printf((UB *)"[imu] sensor restarted\n");
+					}
+				}
+			} else {
+				/* a short glitch: below the limit */
 			}
+		}
+		/* A stop still waiting (command queue was full) is retried on
+		   every pass, also when this pass's sensor read failed. */
+		if (stop_pending) {
+			send_stop();
 		}
 
 		/* Status line, about once a second.  "reads" should stay near

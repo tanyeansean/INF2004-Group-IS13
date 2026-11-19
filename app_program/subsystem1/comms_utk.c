@@ -205,6 +205,7 @@ static void handle_command(uint8_t const * p_data, uint8_t len)
         case PKT_OP_ESTOP:      cmd.type = (uint8_t)CMD_ESTOP;      break;
         case PKT_OP_RESET_PEAK: cmd.type = (uint8_t)CMD_RESET_PEAK; break;
         case PKT_OP_SUMMARY:    cmd.type = (uint8_t)CMD_SUMMARY;    break;
+        case PKT_OP_CALIBRATE:  cmd.type = (uint8_t)CMD_CALIBRATE;  break;  /* Jin, 19 Nov */
         case PKT_OP_SPEED:
             cmd.type = (uint8_t)CMD_SET_SPEED;
             cmd.arg  = (uint8_t)((arg > CMD_SPEED_MAX_CMS) ? CMD_SPEED_MAX_CMS : arg) & 0x1Fu;

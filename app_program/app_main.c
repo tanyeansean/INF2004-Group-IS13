@@ -22,7 +22,8 @@
  *	               events, hands them to the kernel's MQTT client
  *	  subsystem2/  Mission Control + Motor Control (Buddy 2, Sean)
  *	  subsystem3/  Line Follow + Barcode Decode (Buddy 3, Yong Quan)
- *	  subsystem4/  (empty template, Buddy 4, Jin Hin)
+ *	  subsystem4/  Terrain Monitor (Buddy 4, Jin Hin): IMU tilt, humps,
+ *	               hump height, lifted / overturned stop
  *	  subsystem5/  Obstacle Avoid (Buddy 5, Joe).  Compiled, but NOT
  *	               started unless built with APP_WITH_S5=1 (untested).
  *

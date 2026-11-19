@@ -10,6 +10,8 @@ EXPORT ID	flg_hb;		/* heartbeat flag (all tasks set, Safety Monitor reads) */
 EXPORT ID	mbf_status;	/* IF-05, owned by S1 (the receiver) */
 EXPORT ID	mbf_mqtt_tx;	/* Telemetry task -> WiFi task */
 EXPORT ID	mbf_mqtt_rx;	/* WiFi task -> Telemetry task */
+EXPORT ID	mbf_s1_obst;	/* Mission Control -> Telemetry: S5 scan (Jin, 19 Nov) */
+#define S1_OBST_MSGS		(4U)
 
 /* Message-buffer sizes: a small length header per message; 8 bytes per
    message is a safe margin (as subsystem 5 does). */
@@ -79,6 +81,22 @@ EXPORT void s1_post_junction(char letter, telem_move_t move)
 	post(letter_move(S1_STATUS_JUNCTION, letter, move));
 }
 
+/* Obstacle scan result -> laptop (added 19 Nov by Jin).  Mission Control
+   calls this when S5 sends its PLAN; the Telemetry task publishes it as
+   event/obstacle (telem_event_obstacle(), which nothing called before,
+   so the dashboard never showed the obstacle width). */
+EXPORT void s1_post_obstacle(UB closest_cm, UB width_cm, UB left_cm, UB right_cm, UB plan)
+{
+	s1_obst_t	m;
+
+	m.closest_cm = closest_cm;
+	m.width_cm   = width_cm;
+	m.left_cm    = left_cm;
+	m.right_cm   = right_cm;
+	m.plan       = plan;
+	(void)tk_snd_mbf(mbf_s1_obst, &m, (INT)sizeof(m), TMO_POL);
+}
+
 EXPORT const char *s1_link_name(void)
 {
 #if TM_WIFI_CYW43 && TM_MQTT
@@ -107,7 +125,11 @@ EXPORT ER subsystem1_init(void)
 		return mbf_mqtt_tx;
 	}
 	mbf_mqtt_rx = make_mbf(1U + S1_MQTT_RX_DATA_MAX, S1_MQTT_RX_MSGS);
-	return (mbf_mqtt_rx < E_OK) ? mbf_mqtt_rx : E_OK;
+	if (mbf_mqtt_rx < E_OK) {
+		return mbf_mqtt_rx;
+	}
+	mbf_s1_obst = make_mbf(sizeof(s1_obst_t), S1_OBST_MSGS);	/* Jin, 19 Nov */
+	return (mbf_s1_obst < E_OK) ? mbf_s1_obst : E_OK;
 }
 
 EXPORT ER subsystem1_start(void)

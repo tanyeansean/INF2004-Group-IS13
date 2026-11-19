@@ -87,7 +87,14 @@
 #define JN_RESCAN_MARGIN_MM	60	/* run-up: reverse this far past the first bar */
 #define JN_RESCAN_DEFAULT_MM	250	/* reverse when the barcode position is unknown */
 #define JN_RESCAN_MAX_MM	600	/* never reverse further than this */
-#define JN_BAR_MIN_EDGES	10U	/* fewer edges = flicker, not a barcode attempt */
+#define JN_BAR_MIN_EDGES	4U	/* fewer edges = flicker, not a barcode attempt.
+					   10 -> 4 (Jin, 19 Nov): at speed the reader
+					   caught only 2-4 of 30 edges of a real barcode,
+					   so it was never marked. 4 = two bars, so the
+					   junction's own cross line (one bar, 2 edges)
+					   does not count. */
+#define JN_RESCAN_ARRIVE_MM	30	/* rescan: junctions count again this close to
+					   the one that started it (Jin, 19 Nov) */
 #define JN_BAR_GAP_MS		500U	/* GP7 quiet this long: next edge = new pass */
 
 #define S2_LINE_WAIT_MS		20
@@ -155,6 +162,8 @@ LOCAL UW		g_bar_pass_edges;	/* edges in the current pass */
 LOCAL W			g_bar_pass_min_um;	/* rearmost odometer reading at an edge */
 LOCAL BOOL		g_bar_pass_seen = FALSE;
 LOCAL BOOL		g_bar_unreadable = FALSE; /* real INVALID since the last junction */
+LOCAL BOOL		g_jn_ignoring = FALSE;	/* rescan: junctions ignored ... */
+LOCAL W			g_jn_ignore_below_um;	/* ... until the odometer is back here */
 LOCAL W			g_bar_unreadable_min_um;
 
 LOCAL const char * const k_jn_move[BARCMD_COUNT] = { "LEFT", "RIGHT", "FORWARD", "U-TURN" };
@@ -209,6 +218,15 @@ LOCAL void car_start(void)
 		tm_printf((UB *)"[car] start ignored - still calibrating\n");
 		return;
 	}
+	/* S4 (added 17 Nov by Jin): no start while the IMU is still calibrating
+	   (the car must stand still for it) or while the car is lifted or
+	   overturned (car test 17 Nov: a START was accepted upside down).
+	   A dead IMU does not block the start (subsystem4.h, s4_start_ok). */
+	if (!s4_start_ok()) {
+		tm_printf((UB *)"[car] start ignored - IMU calibrating, or the car is off the floor."
+			  " Put it down, hands off, wait for the [imu] line, press again.\n");
+		return;
+	}
 #if APP_WITH_S5
 	/* START also clears S5's latched fault: only Mission Control clears
 	   fault bits. RESUME takes S5 out of its FAULT state. */
@@ -220,10 +238,19 @@ LOCAL void car_start(void)
 #endif
 	/* A new run (S4, added 13 Nov by Jin): forget the highest hump, so
 	   moving the car by hand before START can't count, and clear S4's
-	   lifted / overturned bit (bit 2), which only Mission Control clears. */
-	(void)tk_clr_flg(flg_faults, ~(UINT)FAULT_BIT_COLLISION);
+	   lifted / overturned bit (bit 2), which only Mission Control clears.
+	   19 Nov (Jin): also clear the IMU fault (bit 5), so each run's
+	   summary shows only that run's IMU drop-outs. S4 sets it again at
+	   once if the sensor is still not answering. */
+	(void)tk_clr_flg(flg_faults, ~(UINT)(FAULT_BIT_COLLISION | FAULT_BIT_IMU_FAULT));
 	s4_new_run();
 	g_jn_rescans = 0U;
+	/* A barcode "pass" seen while the car was carried or placed is not a
+	   barcode on this run (car test 19 Nov 19:55: it made the first
+	   junction reverse a fixed 250 mm). Forget it (Jin, 19 Nov). */
+	g_bar_unreadable = FALSE;
+	g_bar_pass_seen  = FALSE;
+	g_jn_ignoring    = FALSE;
 	car_resume_follow();
 	tm_printf((UB *)"[car] START (base PWM M1=%d M2=%d)\n", g_base_m1, g_base_m2);
 }
@@ -489,20 +516,39 @@ LOCAL void on_junction(void)
 		return;
 	}
 
-	if (g_bar_unreadable && (g_jn_rescans < JN_RESCAN_MAX) && !JUNCTION_STOPS) {
-		g_jn_rescans++;
+	/* Only a RECENT unreadable barcode is rescanned (Jin, 19 Nov): the
+	   reverse is the distance travelled since that barcode's first bar
+	   (wheel encoders) + JN_RESCAN_MARGIN_MM run-up. If that is more than
+	   JN_RESCAN_MAX_MM, the "unreadable" was not this junction's barcode
+	   (car test 19 Nov 19:55: it came from handling the car before
+	   START), so it is dropped: no barcode here, straight on. The old
+	   fixed JN_RESCAN_DEFAULT_MM reverse is no longer used. */
+	if (g_bar_unreadable) {
 		rev_um = (odo_um() - g_bar_unreadable_min_um) + ((W)JN_RESCAN_MARGIN_MM * 1000);
 		if ((rev_um <= ((W)JN_RESCAN_MARGIN_MM * 1000)) ||
 		    (rev_um > ((W)JN_RESCAN_MAX_MM * 1000))) {
-			rev_um = (W)JN_RESCAN_DEFAULT_MM * 1000;
+			tm_printf((UB *)"[jn] unreadable barcode was %dmm back - not this junction's, ignored\n",
+				  (INT)((rev_um / 1000) - (W)JN_RESCAN_MARGIN_MM));
+			g_bar_unreadable = FALSE;
 		}
+	}
+	if (g_bar_unreadable && (g_jn_rescans < JN_RESCAN_MAX) && !JUNCTION_STOPS) {
+		g_jn_rescans++;
 		g_bar_unreadable = FALSE;
+		/* While driving back over the barcode, its bars look like a
+		   junction (both front sensors black): car test 19 Nov 19:55
+		   crept over the barcode as "no barcode - straight on". Ignore
+		   junctions until the car is back within JN_RESCAN_ARRIVE_MM of
+		   this one (Jin, 19 Nov). */
+		g_jn_ignore_below_um = odo_um() - ((W)JN_RESCAN_ARRIVE_MM * 1000);
+		g_jn_ignoring        = TRUE;
 		tm_printf((UB *)"[jn] junction: barcode unreadable - rescan %u of %u, reversing %dmm\n",
 			  g_jn_rescans, (UINT)JN_RESCAN_MAX, (INT)(rev_um / 1000));
 		jn_begin_rescan(rev_um);
 		return;
 	}
 
+#if JUNCTION_STOPS
 	car_stop(ROBOT_STOPPED);
 	if (g_bar_unreadable) {
 		tm_printf((UB *)"[jn] junction: barcode still unreadable after %u rescans - stopped\n",
@@ -512,6 +558,21 @@ LOCAL void on_junction(void)
 	}
 	g_bar_unreadable = FALSE;
 	g_jn_rescans = 0U;
+#else
+	/* No barcode read (none there, or still unreadable after the
+	   rescans): go straight over the junction and keep following the
+	   line, instead of stopping (Jin, 19 Nov, for the team).  Same as a
+	   FORWARD barcode: creep onto the crossing, then line following. */
+	if (g_bar_unreadable) {
+		tm_printf((UB *)"[jn] junction: barcode still unreadable after %u rescans - straight on\n",
+			  g_jn_rescans);
+	} else {
+		tm_printf((UB *)"[jn] junction: no barcode - straight on\n");
+	}
+	s1_post_junction('?', to_telem_move(BARCMD_STRAIGHT));
+	g_bar_unreadable = FALSE;
+	jn_begin_move(BARCMD_STRAIGHT);		/* also clears g_jn_rescans */
+#endif
 }
 
 /* Track barcode passes from S3's queued-edge counter: how many edges, and
@@ -670,6 +731,11 @@ LOCAL const char *s5_fault_cause(void)
 }
 
 /* Instant stop (OBSTACLE, CLEAR): drop any pending reply too. */
+/* Line search confirm (Jin, 19 Nov): passes in a row with a front sensor
+   black before FWD_TO_LINE / a turn-to-line counts the line (~10 ms). */
+#define AV_LINE_CONFIRM		(2U)
+LOCAL UW		g_av_line_n;
+
 LOCAL void av_halt(void)
 {
 	motor_set(0, 0);
@@ -705,6 +771,7 @@ LOCAL void av_begin(H left, H right, W target_um)
 	g_av_prog_ms_r = g_av_begin_ms;
 	g_av_moving    = TRUE;
 	g_av_pausing   = FALSE;
+	g_av_line_n    = 0U;		/* Jin, 19 Nov: see avoid_step() */
 	g_av_straight  = (left == right) ? TRUE : FALSE;	/* FWD / BWD */
 	g_av_pwm       = (left < 0) ? (H)-left : left;
 	g_av_hold      = 0;
@@ -856,6 +923,9 @@ LOCAL void on_obstacle(obstacle_msg_t const *p)
 		tm_printf((UB *)"[obs] plan %s: closest=%u width=%u L=%u R=%u side=%u\n",
 			  k_obs_plan[p->plan & 7U], (UINT)p->closest_cm, (UINT)p->width_cm,
 			  (UINT)p->left_clear_cm, (UINT)p->right_clear_cm, (UINT)p->sidestep_cm);
+		/* to the laptop dashboard (Jin, 19 Nov) */
+		s1_post_obstacle(p->closest_cm, p->width_cm, p->left_clear_cm,
+				 p->right_clear_cm, (UB)p->plan);
 		break;
 
 	case OBS_MSG_CLEAR:
@@ -963,7 +1033,15 @@ LOCAL void avoid_step(void)
 		}
 	} else if (g_av_moving) {
 		t = now_ms();
+		/* The line counts only after AV_LINE_CONFIRM passes in a row
+		   with black (Jin, 19 Nov; same as his 17 Nov fix): one speck
+		   or a single noisy reading used to end the search early. */
 		if (av_line_seen()) {
+			g_av_line_n++;
+		} else {
+			g_av_line_n = 0U;
+		}
+		if (g_av_line_n >= AV_LINE_CONFIRM) {
 			av_finish(AVOID_EVT_LINE_FOUND);
 		} else {
 			drv_encoder_read(&cl, &cr);
@@ -1140,8 +1218,18 @@ LOCAL void on_line(line_err_t le)
 		UB rising = (jn && !g_jn_prev) ? 1U : 0U;
 
 		g_jn_prev = jn;
+		/* Rescan: skip the barcode's bars on the way back (Jin, 19 Nov). */
+		if (g_jn_ignoring && (odo_um() >= g_jn_ignore_below_um)) {
+			g_jn_ignoring = FALSE;
+		}
 		if (rising && (g_mode == CAR_FOLLOW) && !line_err_get_lost(le)) {
-			on_junction();
+			if (g_jn_ignoring) {
+				tm_printf((UB *)"[jn] both black %dmm before the junction - barcode bar, ignored\n",
+					  (INT)((g_jn_ignore_below_um - odo_um()) / 1000) +
+					  (INT)JN_RESCAN_ARRIVE_MM);
+			} else {
+				on_junction();
+			}
 		}
 	}
 

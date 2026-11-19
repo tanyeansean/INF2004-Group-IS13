@@ -59,6 +59,31 @@ static inline UINT  s4_report_lift(UW r)          { return (UINT)((r >> 20) & 0x
 static inline UINT  s4_report_last_hump_mm(UW r)  { return (UINT)((r >> 22) & 0x7FU); }
 static inline UINT  s4_report_humps(UW r)         { return (UINT)((r >> 29) & 0x07U); }
 
+/* May the car start driving?  For Mission Control's START check (17 Nov).
+   No, while the IMU is still calibrating (about 6 s after READY: the car
+   must stand still for it, and lift detection is not running yet), and
+   no, while the car is lifted or overturned (a START in the air would
+   spin the wheels; car test 17 Nov).  Yes if the sensor is not answering:
+   a loose IMU wire must not keep the car from running at all.
+   One aligned word, written only by terrain_task: no lock needed. */
+#define S4_ST_CALIBRATING	0U	/* not ready yet */
+#define S4_ST_OK		1U	/* detector running */
+#define S4_ST_NO_SENSOR		2U	/* GY-511 not answering / bad calibration */
+IMPORT volatile UW	s4_status_word;
+
+static inline BOOL s4_start_ok(void)
+{
+	UW const st = s4_status_word;
+
+	if (st == S4_ST_NO_SENSOR) {
+		return TRUE;
+	}
+	if (st == S4_ST_CALIBRATING) {
+		return FALSE;
+	}
+	return (s4_report_lift(s4_report()) == 0U) ? TRUE : FALSE;
+}
+
 /* Start of a new run: forget the highest hump.  Any task may call it (for
    example on START or on the laptop's reset_peak command); terrain_task
    does the work on its next reading. */

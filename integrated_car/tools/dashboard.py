@@ -50,6 +50,7 @@ state = {                       # latest of everything, sent to a new tab
     "broker_map": None, "car_map": None, "summary": None, "summary_check": None,
     "barcode": None, "barcode_seen": 0, "barcode_unreadable": 0,
     "ack": None, "map_ack": None, "lost": 0,
+    "obstacle": None, "hump": None,        # last scan / hump (Jin, 19 Nov)
 }
 last_live_seq = None
 enc = (pk.Unwrap(16), pk.Unwrap(16))
@@ -225,6 +226,20 @@ def on_message(client, userdata, msg):
                                 "seen": state["barcode_seen"],
                                 "unreadable": state["barcode_unreadable"]}
             push("barcode", state["barcode"])
+        elif sub == "event/obstacle":
+            # Joe's scan result, for the obstacle card (Jin, 19 Nov)
+            e = pk.unpack("ev_obstacle", payload)
+            state["obstacle"] = {"dist": e["dist"], "width": e["width"], "clear_l": e["clear_l"],
+                                 "clear_r": e["clear_r"], "plan": pk.name(pk.ACTIONS, e["action"]),
+                                 "text": text, "t": time.strftime("%H:%M:%S")}
+            push("obstacle", state["obstacle"])
+            push("event", {"topic": sub, "text": text})
+        elif sub == "event/hump":
+            e = pk.scaled("ev_hump", payload)
+            state["hump"] = {"peak": round(e["peak"], 1), "dist": int(e["dist"]),
+                             "t": time.strftime("%H:%M:%S")}
+            push("hump", state["hump"])
+            push("event", {"topic": sub, "text": text})
         elif sub.startswith("event/"):
             push("event", {"topic": sub, "text": text})
         elif sub == "cmd":

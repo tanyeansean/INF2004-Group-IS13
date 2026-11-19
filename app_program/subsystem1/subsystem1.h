@@ -51,6 +51,15 @@ IMPORT void	s1_post_line(UB sensor_bits, H position, BOOL on_line);
 IMPORT void	s1_post_barcode(char letter, telem_move_t move);
 IMPORT void	s1_post_junction(char letter, telem_move_t move);
 
+/* S5's scan result for the laptop (added 19 Nov by Jin): closest, width,
+   free space left / right in cm (255 = none / out of range) and the plan
+   (obs_plan_t = avoid_action_t order).  Zero-timeout, a full queue drops. */
+typedef struct {
+	UB	closest_cm, width_cm, left_cm, right_cm, plan;
+} s1_obst_t;
+IMPORT ID	mbf_s1_obst;
+IMPORT void	s1_post_obstacle(UB closest_cm, UB width_cm, UB left_cm, UB right_cm, UB plan);
+
 /* Link name for status lines ("ONLINE", ..., "off" without MQTT). */
 IMPORT const char *s1_link_name(void);
 

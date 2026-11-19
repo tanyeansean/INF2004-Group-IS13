@@ -289,7 +289,7 @@ static unsigned int hump_step(terrain_t *t)
 				if ((t->hump_peak_deg >= MIN_PEAK_DEG) &&
 				    (t->hump_peak_deg <= MAX_PEAK_DEG)) {
 					t->height_mm = D_MM * sin_deg(t->hump_peak_deg);
-				t->humps++;
+					t->humps++;
 					if (t->height_mm > t->best_mm) {
 						t->best_mm = t->height_mm;
 					}

@@ -87,6 +87,10 @@ static pkt_field_t const PKT_ACK_OP             = {  5u,  3u };  /* opcode answe
 #define PKT_OP_START            (5u)
 #define PKT_OP_SUMMARY          (6u)    /* send the run summary now (run/summary) */
 #define PKT_OP_UNREADABLE       (7u)    /* in an ack: the command was not 1 byte */
+#define PKT_OP_CALIBRATE        (7u)    /* redo the line-sensor calibration (Jin, 19 Nov).
+                                          Shares 7 with UNREADABLE: that one is only ever
+                                          an ack with result BAD_LENGTH, so the two are
+                                          told apart by the result. */
 
 /* Ack result: 0-26 = accepted (SPEED: the speed passed on), else: */
 #define PKT_ACK_BAD_ARG         (27u)   /* argument must be 0 for this command */

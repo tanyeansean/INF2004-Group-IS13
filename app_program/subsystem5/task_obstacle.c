@@ -238,6 +238,8 @@ LOCAL void oa_timer_check(void)
 }
 #endif /* OA_DEBUG */
 
+LOCAL BOOL s_in_sweep = FALSE;	/* oa_sweep() running (Jin, 19 Nov) */
+
 /* One ping, never faster than the HC-SR04's 60 ms minimum period. Paced
    on the last trigger time, so the period does not drift (Lab 5). */
 LOCAL hcsr04_status_t oa_ping(UB *p_dist_cm)
@@ -253,13 +255,32 @@ LOCAL hcsr04_status_t oa_ping(UB *p_dist_cm)
 	status = drv_hcsr04_measure_cm(p_dist_cm);
 	oa_heartbeat();
 
+	/* Sensor on an arm (Jin, 19 Nov): the HC-SR04 now sits
+	   OA_SENSOR_ARM_CM out from the servo's turning point. Every reading
+	   is turned into the distance from that turning point (the servo
+	   did not move), so the stop distance, the bypass legs and the
+	   sideways maths (d * sin(angle) in obstacle_profile.c) all work
+	   from the same point as before. */
+	if ((status == HCSR04_OK) &&
+	    (*p_dist_cm < (UB)(OA_DIST_OUT_OF_RANGE - OA_SENSOR_ARM_CM))) {
+		*p_dist_cm = (UB)(*p_dist_cm + OA_SENSOR_ARM_CM);
+	}
+
 	/* NO_ECHO (ECHO never rose) and BUSY (ECHO already high, i.e. stuck)
 	   both mean the sensor is not working: either one, 5 pings in a row,
 	   is a fault. A stuck-high ECHO used to reset the count and hide. */
 	/* TOO_SHORT (only < OA_DIST_MIN_VALID_CM echoes) counts too: now and
 	   then it is noise and is simply ignored, but every ping in a row
 	   means something is stuck in front of / against the sensor. */
-	if ((status == HCSR04_NO_ECHO) || (status == HCSR04_BUSY) ||
+	/* During a sweep (Jin, 19 Nov) NO_ECHO and TOO_SHORT do not count:
+	   with the +/- 60 deg sweep the far angles can point at open space or
+	   at the car's own wheels / chassis (8-9 cm seen at the ends, width
+	   test 19 Nov), and 5 such pings in a row latched a sensor FAULT that
+	   stopped all scanning. Straight-ahead pings still count, and BUSY
+	   (ECHO stuck high) always counts. */
+	if (s_in_sweep && ((status == HCSR04_NO_ECHO) || (status == HCSR04_TOO_SHORT))) {
+		/* a miss inside a sweep: just a point with no reading */
+	} else if ((status == HCSR04_NO_ECHO) || (status == HCSR04_BUSY) ||
 	    (status == HCSR04_TOO_SHORT)) {
 		SAT_INC(s_ctx.no_echo_count, OA_NO_ECHO_LIMIT);
 		if (s_ctx.no_echo_count >= OA_NO_ECHO_LIMIT) {
@@ -477,6 +498,7 @@ LOCAL void oa_sweep(UB start_deg, UB step_deg, UB end_deg)
 	s_ctx.scan.start_deg = start_deg;
 	s_ctx.scan.step_deg  = step_deg;
 	s_ctx.scan.count     = 0U;
+	s_in_sweep           = TRUE;	/* misses here are not a sensor fault */
 
 	for (angle = start_deg;
 	     (angle <= end_deg) && (s_ctx.scan.count < OA_MAX_SCAN_POINTS);
@@ -492,6 +514,7 @@ LOCAL void oa_sweep(UB start_deg, UB step_deg, UB end_deg)
 		s_ctx.scan.dist_cm[s_ctx.scan.count] = dist_cm;
 		s_ctx.scan.count++;
 	}
+	s_in_sweep = FALSE;
 
 #if OA_DEBUG
 	oa_debug_scan();
@@ -500,10 +523,56 @@ LOCAL void oa_sweep(UB start_deg, UB step_deg, UB end_deg)
 
 /* ------------------------------------------------------------ states */
 
+#if OA_WIDTH_TEST
+/*
+ * Width test (added 19 Nov by Jin; build with OA_WIDTH_TEST 1, car NOT
+ * driven).  Every OA_WIDTH_TEST_PERIOD_MS the servo sweeps the whole range
+ * in OA_FINE_STEP_DEG steps, whatever is in front, and the result is
+ * printed and sent as a PLAN report (Mission Control only prints it and
+ * passes it to the dashboard).  The normal "obstacle ahead -> stop and
+ * avoid" is off in this build.  Used to measure how much wider than the
+ * real box the ultrasonic beam makes it look, at several distances.
+ */
+LOCAL UW s_width_test_us = 0U;
+
+LOCAL s5_state_t oa_width_test(void)
+{
+	UB	dist_cm = (UB)OA_DIST_OUT_OF_RANGE;
+	UINT	i;
+
+	if (((s5_time_us() - s_width_test_us) / US_PER_MS) < OA_WIDTH_TEST_PERIOD_MS) {
+		(void)oa_ping(&dist_cm);	/* keeps the loop paced + heartbeat */
+		return S5_STATE_MONITOR;
+	}
+	oa_sweep((UB)OA_SERVO_MIN_DEG, (UB)OA_FINE_STEP_DEG, (UB)OA_SERVO_MAX_DEG);
+	oa_servo_move((UB)OA_SERVO_CENTRE_DEG);
+	profile_build(&s_ctx.scan, &s_ctx.prof);
+	tm_printf((UB *)"[width test] raw (angle:cm):");
+	for (i = 0U; i < s_ctx.scan.count; i++) {
+		tm_printf((UB *)" %u:%u", (UINT)scan_angle(&s_ctx.scan, (uint8_t)i),
+			  (UINT)s_ctx.scan.dist_cm[i]);
+	}
+	tm_printf((UB *)"\n[width test] found=%u closest=%u cm at %u deg, width=%u cm, "
+		  "edges L=%d R=%d cm, clear L=%u R=%u\n",
+		  (UINT)s_ctx.prof.b_found, (UINT)s_ctx.prof.closest_cm,
+		  (UINT)s_ctx.prof.closest_angle_deg, (UINT)s_ctx.prof.width_cm,
+		  (INT)s_ctx.prof.left_edge_cm, (INT)s_ctx.prof.right_edge_cm,
+		  (UINT)s_ctx.prof.left_clear_cm, (UINT)s_ctx.prof.right_clear_cm);
+	if (s_ctx.prof.b_found) {
+		oa_send(OBS_MSG_PLAN, OBS_PLAN_CONTINUE);	/* report only */
+	}
+	s_width_test_us = s5_time_us();
+	return S5_STATE_MONITOR;
+}
+#endif
+
 LOCAL s5_state_t oa_state_monitor(void)
 {
 	UB dist_cm = (UB)OA_DIST_OUT_OF_RANGE;
 
+#if OA_WIDTH_TEST
+	return oa_width_test();
+#endif
 	if ((oa_ping(&dist_cm) == HCSR04_OK) && (dist_cm <= OA_STOP_DIST_CM)) {
 		SAT_INC(s_ctx.confirm_count, OA_CONFIRM_COUNT);
 		if (s_ctx.confirm_count >= OA_CONFIRM_COUNT) {
@@ -628,6 +697,9 @@ LOCAL s5_state_t oa_state_plan(void)
 #if (OA_TURN_IN_DEG < 1U) || (OA_TURN_IN_DEG > 90U)
 #error "OA_TURN_IN_DEG must be 1..90: the second search squares up with 90 - OA_TURN_IN_DEG."
 #endif
+#if (OA_ALIGN_RETRY_DEG > MCMD_PARAM_VALUE_MASK)
+#error "OA_ALIGN_RETRY_DEG must fit in 7 bits (motion_q turn-to-line param)."
+#endif
 #if ((90U + OA_ALIGN_EXTRA_DEG) > MCMD_PARAM_VALUE_MASK)
 #error "90 + OA_ALIGN_EXTRA_DEG must fit in 7 bits (motion_q turn-to-line param)."
 #endif
@@ -737,6 +809,22 @@ LOCAL s5_state_t oa_state_bypass(void)
 	   black within OA_ALIGN_EXTRA_DEG past the expected angle, the car
 	   has lost the line: NO_LINE fault rather than drive off on a guess. */
 	r = oa_turn_to_line(turn_out, (UB)(align_deg + OA_ALIGN_EXTRA_DEG));
+	if (r == OA_MOVE_DONE) {
+		/* Second try (Jin, 19 Nov). The first spin allows align_deg +
+		   OA_ALIGN_EXTRA_DEG (60 + 30 = 90). A straight line needs ~58,
+		   but if the track bends the same way just after the obstacle
+		   (e.g. a sharp right turn after a right bypass) the line ahead
+		   is up to ~150 deg round, so keep spinning the same way up to
+		   OA_ALIGN_RETRY_DEG more before giving up. The stretch of line
+		   behind the car is only reached at ~240 deg, so this cannot
+		   pick up the line the car came along. Car test 19 Nov 17:06:
+		   a right bypass ended with NO_LINE here. */
+#if OA_DEBUG
+		tm_printf((UB *)"[S5 dbg] line not found after %u deg - spinning up to %u deg more\n",
+			  (UINT)(align_deg + OA_ALIGN_EXTRA_DEG), (UINT)OA_ALIGN_RETRY_DEG);
+#endif
+		r = oa_turn_to_line(turn_out, (UB)OA_ALIGN_RETRY_DEG);
+	}
 	if (r == OA_MOVE_DONE) {
 #if OA_DEBUG
 		tm_printf((UB *)"[S5 dbg] FAULT: line sensor never saw the line while lining up\n");

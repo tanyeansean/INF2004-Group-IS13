@@ -44,6 +44,8 @@ typedef enum
     CMD_SUMMARY,             /**< opcode 6 - publish the run summary now;
                                   Telemetry's own data: call
                                   telem_publish_summary() in the handler  */
+    CMD_CALIBRATE,           /**< opcode 7 - redo the line-sensor
+                                  calibration now, car stopped (Jin, 19 Nov) */
     CMD_UNKNOWN
 } comms_cmd_type_t;
 

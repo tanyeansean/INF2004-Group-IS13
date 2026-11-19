@@ -46,6 +46,14 @@ EXPORT void s3_request_line_reset(void)
 	(void)tk_set_flg(flg_s3, S3_FLG_LINE_RESET);
 }
 
+/* Redo the line-sensor calibration (added 19 Nov by Jin, for the
+   dashboard's "Calibrate now" button): the line task picks it up within
+   5 ms and runs the same 3 s countdown + black + white sequence. */
+EXPORT void s3_request_recalibrate(void)
+{
+	(void)tk_set_flg(flg_s3, S3_FLG_RECAL);
+}
+
 EXPORT BOOL s3_line_reset_pending(void)
 {
 	T_RFLG	rflg;

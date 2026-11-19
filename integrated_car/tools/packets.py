@@ -136,9 +136,12 @@ MOTIONS = ["STATIONARY", "ACCELERATING", "TURNING", "CLIMBING", "DESCENDING", "I
 ACTIONS = ["STOP", "CONTINUE", "LEFT", "RIGHT", "REVERSE"]
 # START and SPEED have the top bit set, so no plain ASCII byte can mean them.
 OPS = {"ping": 0, "stop": 1, "estop": 2, "reset_peak": 3, "speed": 4, "start": 5,
-       "summary": 6}
+       "summary": 6,
+       "calibrate": 7}     # redo line-sensor calibration (app_program only; Jin, 19 Nov)
 OP_NAMES = {v: k.upper() for k, v in OPS.items()}
-OP_NAMES[7] = "(unreadable)"
+# Opcode 7 is also what the car puts in an ack for a command that was not
+# 1 byte; that ack always has result ACK_BAD_LENGTH, which describe_ack()
+# checks first, so the two never get mixed up.
 SPEED_MAX_CMS = 20                 # the car caps speed commands here
 ACK_BAD_ARG, ACK_REJECTED, ACK_BAD_LENGTH, ACK_NO_HANDLER, ACK_UNKNOWN_OP = 27, 28, 29, 30, 31
 FAULT_WIFI_LOSS = 1 << 15
@@ -187,7 +190,7 @@ def encode_command(text):
     """'start', 'stop', 'estop', 'speed 15', 'reset_peak', 'ping' -> 1 byte."""
     words = text.lower().split()
     if not words or words[0] not in OPS:
-        raise ValueError("unknown command (start, stop, estop, speed N, reset_peak, ping)")
+        raise ValueError("unknown command (start, stop, estop, speed N, reset_peak, ping, summary, calibrate)")
     op = OPS[words[0]]
     arg = 0
     if words[0] == "speed":

@@ -4,178 +4,290 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Robocar Dashboard</title>
+<!-- Layout redone 19 Nov 2026 (Jin): main controls on top, one card per
+     job, obstacle scan card (Joe's scan: distance, width, free space),
+     speed graph, faults in plain words, extras folded away. Same data and
+     buttons as before; served by dashboard.py. -->
 <style>
-  :root { --bg:#0f1216; --panel:#181d24; --line:#2a323d; --fg:#e6e9ee; --dim:#8a94a3;
-          --ok:#3ccf6c; --warn:#f2b63c; --bad:#f25c5c; --acc:#4da3ff; }
+  :root {
+    --bg:#0e1116; --panel:#161b22; --panel2:#0f1318; --line:#262d37; --fg:#e6e9ee; --dim:#8b95a4;
+    --ok:#3ccf6c; --ok-bg:#16351f; --warn:#f2b63c; --warn-bg:#3a2d12; --bad:#f25c5c; --bad-bg:#3d1717;
+    --acc:#4da3ff; --left:#4da3ff; --right:#f29a3c;
+  }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui,Segoe UI,Roboto,sans-serif; }
-  header { display:flex; flex-wrap:wrap; gap:12px 20px; align-items:center; padding:10px 16px;
-           border-bottom:1px solid var(--line); }
-  header h1 { font-size:18px; margin:0 12px 0 0; }
-  .pill { padding:3px 10px; border-radius:12px; background:var(--line); font-size:12px; }
-  .pill.ok { background:#1d4d2e; color:var(--ok); } .pill.bad { background:#4d1d1d; color:var(--bad); }
-  main { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:12px; padding:12px 16px; }
-  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
-  section h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:0 0 10px; }
-  .wide { grid-column:1 / -1; }
-  button { font:inherit; padding:9px 14px; border:0; border-radius:8px; background:#2b3542; color:var(--fg); cursor:pointer; }
-  button:hover { background:#36424f; } button:disabled { opacity:.5; cursor:default; }
-  button.go { background:#1f7a3f; } button.go:hover { background:#25914b; }
-  button.stop { background:#7a5b1f; } button.stop:hover { background:#8f6a22; }
-  button.estop { background:#9e2b2b; font-weight:700; font-size:16px; padding:12px 22px; } button.estop:hover { background:#b53232; }
-  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:8px; }
-  input[type=text] { font:inherit; padding:8px 10px; width:62px; border:1px solid var(--line); border-radius:6px;
-                     background:#0f1216; color:var(--fg); text-transform:uppercase; text-align:center; }
-  input[type=range] { width:160px; }
-  .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px; }
-  .tile { background:#10151b; border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
-  .tile .k { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.05em; }
-  .tile .v { font-size:22px; font-weight:600; margin-top:2px; font-variant-numeric:tabular-nums; }
-  .tile .u { font-size:12px; color:var(--dim); margin-left:3px; font-weight:400; }
-  .state { font-size:26px; font-weight:700; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui,"Segoe UI",Roboto,sans-serif; }
   .muted { color:var(--dim); font-size:12px; }
-  .sensors { display:flex; gap:10px; align-items:center; }
-  .sensor { width:64px; height:44px; border-radius:8px; border:2px solid var(--line); display:flex;
-            align-items:center; justify-content:center; font-weight:700; font-size:12px; }
-  .sensor.white { background:#f3f3f3; color:#222; } .sensor.black { background:#111; color:#ddd; border-color:#555; }
-  .bar { position:relative; height:18px; background:#10151b; border:1px solid var(--line); border-radius:9px; margin:6px 0 2px; }
+  .num { font-variant-numeric:tabular-nums; }
+
+  /* top bar */
+  header { position:sticky; top:0; z-index:5; background:var(--bg); border-bottom:1px solid var(--line);
+           padding:10px 16px; display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; }
+  header h1 { font-size:17px; margin:0 8px 0 0; letter-spacing:.02em; }
+  .pill { padding:3px 10px; border-radius:999px; background:var(--line); font-size:12px; white-space:nowrap; }
+  .pill.ok { background:var(--ok-bg); color:var(--ok); } .pill.bad { background:var(--bad-bg); color:var(--bad); }
+  .pill.warn { background:var(--warn-bg); color:var(--warn); }
+
+  /* action bar */
+  .actions { display:flex; flex-wrap:wrap; gap:10px; align-items:center; padding:12px 16px 0; }
+  button { font:inherit; padding:9px 14px; border:0; border-radius:8px; background:#273140; color:var(--fg); cursor:pointer; }
+  button:hover { background:#324052; }
+  .big { font-size:16px; font-weight:700; padding:12px 22px; border-radius:10px; }
+  .go { background:#1f7a3f; } .go:hover { background:#25914b; }
+  .stop { background:#7a5b1f; } .stop:hover { background:#8f6a22; }
+  .estop { background:#a12a2a; } .estop:hover { background:#bd3232; }
+  .cal-btn { background:#2b4f7a; } .cal-btn:hover { background:#33608f; }
+  #ackline { flex:1 1 220px; min-width:200px; }
+
+  /* grid */
+  main { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(0,1fr); gap:12px; padding:12px 16px 24px; }
+  @media (max-width:900px) { main { grid-template-columns:minmax(0,1fr); } }
+  .col { display:flex; flex-direction:column; gap:12px; min-width:0; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; min-width:0; }
+  section h2 { font-size:12px; text-transform:uppercase; letter-spacing:.07em; color:var(--dim); margin:0 0 10px; font-weight:600; }
+  .pair { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; }
+
+  /* live card */
+  .state-row { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 14px; margin-bottom:10px; }
+  .state { font-size:30px; font-weight:800; letter-spacing:.02em; }
+  .state.run { color:var(--ok); } .state.stop { color:var(--warn); } .state.err { color:var(--bad); }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px; }
+  .tile { background:var(--panel2); border:1px solid var(--line); border-radius:9px; padding:8px 10px; }
+  .tile .k { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.05em; }
+  .tile .v { font-size:21px; font-weight:650; margin-top:1px; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .tile .u { font-size:12px; color:var(--dim); margin-left:3px; font-weight:400; }
+  .line-row { display:flex; flex-wrap:wrap; gap:14px; align-items:center; margin:10px 0; }
+  .sensor { width:72px; height:46px; border-radius:9px; border:2px solid var(--line); display:flex; flex-direction:column;
+            align-items:center; justify-content:center; font-weight:700; font-size:12px; line-height:1.15; }
+  .sensor small { font-weight:400; font-size:10px; opacity:.75; }
+  .sensor.white { background:#f3f3f3; color:#222; } .sensor.black { background:#050607; color:#ddd; border-color:#555; }
+  .posbox { flex:1; min-width:200px; }
+  .bar { position:relative; height:16px; background:var(--panel2); border:1px solid var(--line); border-radius:8px; margin-top:4px; }
   .bar .mid { position:absolute; left:50%; top:0; bottom:0; width:1px; background:var(--dim); }
-  .bar .dot { position:absolute; top:2px; width:12px; height:12px; border-radius:6px; background:var(--acc); margin-left:-6px; left:50%; transition:left .15s; }
-  .log { height:220px; overflow:auto; background:#0b0e12; border:1px solid var(--line); border-radius:8px;
+  .bar .dot { position:absolute; top:2px; width:10px; height:10px; border-radius:5px; background:var(--acc); margin-left:-5px; left:50%; transition:left .15s; }
+  canvas { width:100%; height:120px; display:block; background:var(--panel2); border:1px solid var(--line); border-radius:9px; }
+  .legend { display:flex; gap:14px; font-size:12px; color:var(--dim); margin-top:4px; }
+  .legend i { display:inline-block; width:12px; height:3px; border-radius:2px; vertical-align:middle; margin-right:5px; }
+
+  /* faults */
+  .faults { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+  .chip { padding:4px 10px; border-radius:999px; font-size:12px; background:var(--bad-bg); color:#ffb3b3; border:1px solid #6b2626; }
+  .chip.ok { background:var(--ok-bg); color:var(--ok); border-color:#245c34; }
+
+  /* obstacle */
+  .obst { display:grid; grid-template-columns:150px minmax(0,1fr); gap:12px; align-items:center; }
+  @media (max-width:420px) { .obst { grid-template-columns:minmax(0,1fr); } }
+  .obst svg { width:100%; height:auto; background:var(--panel2); border:1px solid var(--line); border-radius:9px; }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:3px 12px; font-size:13px; }
+  .kv b { font-weight:650; font-variant-numeric:tabular-nums; }
+
+  /* calibration */
+  .cal { font-size:24px; font-weight:800; text-align:center; padding:12px; border-radius:10px; border:1px solid var(--line); background:var(--panel2); }
+  .cal.black { background:#050607; color:#eee; } .cal.white { background:#f3f3f3; color:#111; } .cal.wait { color:var(--warn); }
+  .cal small { display:block; font-size:12px; font-weight:400; color:var(--dim); margin-top:3px; }
+  .cal.white small { color:#444; }
+
+  /* barcode, summary, log */
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:8px; }
+  input[type=text] { font:inherit; padding:7px 8px; width:46px; border:1px solid var(--line); border-radius:6px;
+                     background:var(--panel2); color:var(--fg); text-transform:uppercase; text-align:center; }
+  label { font-size:13px; color:var(--dim); }
+  input[type=range] { width:150px; vertical-align:middle; }
+  .sum { display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:6px 12px; font-size:13px; }
+  .sum b { font-weight:650; font-variant-numeric:tabular-nums; }
+  .check.ok { color:var(--ok); } .check.bad { color:var(--bad); }
+  details { border-top:1px solid var(--line); margin-top:10px; padding-top:8px; }
+  details > summary { cursor:pointer; color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.07em; }
+  details[open] > summary { margin-bottom:8px; }
+  .log { height:260px; overflow:auto; background:#0a0d11; border:1px solid var(--line); border-radius:8px;
          padding:8px 10px; font:12px/1.5 ui-monospace,Consolas,monospace; white-space:pre-wrap; }
   .log .t { color:var(--dim); } .log .ev { color:var(--acc); } .log .ack { color:var(--ok); } .log .warn { color:var(--warn); }
-  .faults { padding:6px 10px; border-radius:8px; background:#10151b; border:1px solid var(--line); }
-  .faults.on { background:#4d1d1d; border-color:#9e2b2b; }
-  .sum { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:6px 12px; font-size:13px; }
-  .sum b { font-weight:600; }
-  .check.ok { color:var(--ok); } .check.bad { color:var(--bad); }
-  .cal { font-size:32px; font-weight:800; text-align:center; padding:14px; border-radius:10px; border:1px solid var(--line); background:#10151b; }
-  .cal.black { background:#111; color:#eee; } .cal.white { background:#f3f3f3; color:#111; } .cal.wait { color:var(--warn); }
-  .cal small { display:block; font-size:13px; font-weight:400; color:var(--dim); margin-top:4px; }
-  .cal.white small { color:#444; }
-  .note { font-size:12px; color:var(--dim); margin-top:6px; }
 </style>
 </head>
 <body>
 <header>
   <h1>Robocar P2-4</h1>
   <span id="bridge" class="pill bad">dashboard: connecting</span>
-  <span id="mqtt" class="pill bad">broker: not connected</span>
+  <span id="mqtt" class="pill bad">broker: off</span>
   <span id="car" class="pill bad">car: unknown</span>
-  <span id="lost" class="pill">lost 0</span>
-  <span id="rssi" class="pill">wifi: -</span>
+  <span id="rssi" class="pill">wifi -</span>
   <span id="up" class="pill">up -</span>
-  <span class="muted" id="root"></span>
+  <span id="lost" class="pill">lost 0</span>
 </header>
+
+<div class="actions">
+  <button class="big go" onclick="cmd('start')">▶ Start</button>
+  <button class="big stop" onclick="cmd('stop')">■ Stop</button>
+  <button class="big estop" onclick="cmd('estop')">E-STOP</button>
+  <button class="big cal-btn" onclick="calNow()">Calibrate now</button>
+  <div id="ackline" class="muted">Last reply from the car: <span id="ack">-</span></div>
+</div>
+
 <main>
+<div class="col">
 
-<section>
-  <h2>Controls</h2>
-  <div class="row">
-    <button class="go" onclick="cmd('start')">▶ Start</button>
-    <button class="stop" onclick="cmd('stop')">■ Stop</button>
-    <button class="estop" onclick="cmd('estop')">E-STOP</button>
-  </div>
-  <div class="row">
-    <label>Speed <input id="speed" type="range" min="0" max="20" value="15" oninput="spv.textContent=this.value"></label>
-    <span id="spv">15</span> cm/s
-    <button onclick="cmd('speed '+document.getElementById('speed').value)">Set speed</button>
-  </div>
-  <div class="row">
-    <button onclick="cmd('ping')">Ping</button>
-    <button onclick="cmd('reset_peak')">Reset hump peak</button>
-    <button onclick="cmd('summary')">Run summary now</button>
-  </div>
-  <div class="muted">Last ack: <span id="ack">-</span></div>
-</section>
-
-<section>
-  <h2>Barcode map (letters for each move)</h2>
-  <div class="row">
-    <label>Left <input id="mL" type="text" maxlength="1" value="F"></label>
-    <label>Right <input id="mR" type="text" maxlength="1" value="Z"></label>
-    <label>Forward <input id="mF" type="text" maxlength="1" value="W"></label>
-    <label>U-turn <input id="mU" type="text" maxlength="1" value="X"></label>
-  </div>
-  <div class="row">
-    <button class="go" onclick="sendMap()">Send map</button>
-    <button onclick="clearMap()">Remove stored map</button>
-  </div>
-  <div class="muted">Stored on broker: <span id="bmap">-</span></div>
-  <div class="muted">Car holds: <span id="cmap">-</span></div>
-  <div class="muted">Map ack: <span id="mack">-</span></div>
-</section>
-
-<section>
-  <h2>Calibration guide (press when the car powers on)</h2>
-  <div id="cal" class="cal">Not running<small>The car calibrates its line sensors right after power-on; without the USB console you cannot see the prompts. This timer shows what to do when.</small></div>
-  <div class="row" style="margin-top:8px">
-    <button class="go" onclick="startCal()">I just powered the car on</button>
-    <button onclick="stopCal()">Reset</button>
-  </div>
-  <div class="note">Sequence: ~10 s boot, 3 s warning, then hold both front sensors on the BLACK line (3 s), 3 s warning, then on WHITE (3 s). Calibration only "passes" properly with real contrast, so do it on the track.</div>
-</section>
-
-<section class="wide">
-  <h2>Live data (5 per second)</h2>
-  <div class="tiles">
-    <div class="tile"><div class="k">State</div><div class="v state" id="st">-</div></div>
-    <div class="tile"><div class="k">Distance</div><div class="v" id="dist">-<span class="u">cm</span></div></div>
-    <div class="tile"><div class="k">Speed L / R</div><div class="v" id="spd">-<span class="u">cm/s</span></div></div>
-    <div class="tile"><div class="k">Encoders L / R</div><div class="v" id="enc">-</div></div>
-    <div class="tile"><div class="k">Pitch</div><div class="v" id="pitch">-<span class="u">°</span></div></div>
-    <div class="tile"><div class="k">Turn rate</div><div class="v" id="yaw">-<span class="u">°/s</span></div></div>
-    <div class="tile"><div class="k">Motion</div><div class="v" id="motion" style="font-size:16px">-</div></div>
-    <div class="tile"><div class="k">Highest hump</div><div class="v" id="peak">-<span class="u">cm</span></div></div>
-    <div class="tile"><div class="k">Last barcode</div><div class="v" id="bar" style="font-size:16px">-</div></div>
-  </div>
-  <div class="row" style="margin-top:10px; gap:24px">
-    <div>
-      <div class="k muted">Line sensors</div>
-      <div class="sensors">
-        <div id="sL" class="sensor">LEFT</div>
-        <div id="sR" class="sensor">RIGHT</div>
-        <span id="onl" class="muted">line: -</span>
+  <section>
+    <h2>Live</h2>
+    <div class="state-row">
+      <span id="st" class="state">-</span>
+      <span id="stdesc" class="muted"></span>
+    </div>
+    <div class="line-row">
+      <div id="sL" class="sensor">-<small>left</small></div>
+      <div id="sR" class="sensor">-<small>right</small></div>
+      <div class="posbox">
+        <div class="muted">Line position <span id="pos" class="num">-</span> <span id="onl"></span></div>
+        <div class="bar"><div class="mid"></div><div id="dot" class="dot"></div></div>
+        <div class="muted" style="display:flex;justify-content:space-between"><span>line on the left</span><span>right</span></div>
       </div>
     </div>
-    <div style="flex:1; min-width:220px">
-      <div class="k muted">Line position (turn): <span id="pos">-</span> &nbsp;<span class="muted">left ← 0 → right</span></div>
-      <div class="bar"><div class="mid"></div><div id="dot" class="dot"></div></div>
+    <div class="tiles">
+      <div class="tile"><div class="k">Distance this run</div><div class="v" id="dist">-<span class="u">cm</span></div></div>
+      <div class="tile"><div class="k">Speed L / R</div><div class="v" id="spd">-<span class="u">cm/s</span></div></div>
+      <div class="tile"><div class="k">Wheel counts L / R</div><div class="v" id="enc" style="font-size:17px">-</div></div>
     </div>
+    <div style="margin-top:10px">
+      <canvas id="chart" width="800" height="120"></canvas>
+      <div class="legend"><span><i style="background:var(--left)"></i>left wheel</span><span><i style="background:var(--right)"></i>right wheel</span><span>cm/s, last 60 s</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Faults</h2>
+    <div id="faults" class="faults"><span class="chip ok">none</span></div>
+  </section>
+
+  <div class="pair">
+    <section>
+      <h2>Obstacle scan (Joe)</h2>
+      <div class="obst">
+        <svg id="osvg" viewBox="0 0 150 170" aria-label="Top view of the last obstacle scan"></svg>
+        <div>
+          <div class="kv">
+            <span class="muted">Closest</span><b id="oDist">-</b>
+            <span class="muted">Width</span><b id="oWidth">-</b>
+            <span class="muted">Free left</span><b id="oL">-</b>
+            <span class="muted">Free right</span><b id="oR">-</b>
+            <span class="muted">Plan</span><b id="oPlan">-</b>
+          </div>
+          <div class="muted" id="oTime" style="margin-top:6px">no scan yet</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>IMU (Jin)</h2>
+      <div class="tiles">
+        <div class="tile"><div class="k">Tilt</div><div class="v" id="pitch">-<span class="u">°</span></div></div>
+        <div class="tile"><div class="k">Turn rate</div><div class="v" id="yaw">-<span class="u">°/s</span></div></div>
+        <div class="tile"><div class="k">Motion</div><div class="v" id="motion" style="font-size:15px">-</div></div>
+        <div class="tile"><div class="k">Highest hump</div><div class="v" id="peak">-<span class="u">cm</span></div></div>
+      </div>
+      <div class="muted" id="hump" style="margin-top:8px">no hump yet</div>
+    </section>
   </div>
-  <div id="faults" class="faults" style="margin-top:10px">Faults: none</div>
-</section>
 
-<section class="wide">
-  <h2>Run summary (sent by the car at the end of every run)</h2>
-  <div id="sum" class="sum"><span class="muted">none yet</span></div>
-  <div id="sumcheck" class="check" style="margin-top:6px"></div>
-</section>
+  <section>
+    <h2>Run summary</h2>
+    <div id="sum" class="sum"><span class="muted">sent by the car at the end of every run - none yet</span></div>
+    <div id="sumcheck" class="check muted" style="margin-top:6px"></div>
+  </section>
 
-<section class="wide">
-  <h2>Events and acks</h2>
-  <div id="log" class="log"></div>
-</section>
+</div>
+<div class="col">
 
+  <section>
+    <h2>Calibration</h2>
+    <div id="cal" class="cal">Not running<small>Press Calibrate now with the car stopped on the track.</small></div>
+    <details>
+      <summary>How it works</summary>
+      <div class="muted"><b>Calibrate now</b>: any time the car is stopped. 3 s warning, hold both front sensors on the BLACK line (3 s), 3 s warning, then on WHITE (3 s). The timer starts when the car answers. Start is refused until it is done; a failed one keeps the old calibration. Refused while driving or while the car is still calibrating.</div>
+      <div class="row" style="margin-top:8px">
+        <button onclick="startCal()">Timer for power-on</button>
+        <button onclick="stopCal()">Reset timer</button>
+      </div>
+    </details>
+  </section>
+
+  <section>
+    <h2>Barcodes (Yong Quan)</h2>
+    <div class="kv" style="margin-bottom:10px">
+      <span class="muted">Last barcode</span><b id="bar">-</b>
+      <span class="muted">Car holds map</span><b id="cmap">-</b>
+    </div>
+    <div class="muted" style="margin-bottom:8px">No barcode at a junction: the car goes straight on.</div>
+    <details>
+      <summary>Barcode map</summary>
+      <div class="row">
+        <label>Left <input id="mL" type="text" maxlength="1" value="F"></label>
+        <label>Right <input id="mR" type="text" maxlength="1" value="Z"></label>
+        <label>Fwd <input id="mF" type="text" maxlength="1" value="W"></label>
+        <label>U-turn <input id="mU" type="text" maxlength="1" value="X"></label>
+      </div>
+      <div class="row">
+        <button class="go" onclick="sendMap()">Send map</button>
+        <button onclick="clearMap()">Remove stored map</button>
+      </div>
+      <div class="muted">On the broker: <span id="bmap">-</span> · Map reply: <span id="mack">-</span></div>
+    </details>
+  </section>
+
+  <section>
+    <h2>More controls</h2>
+    <div class="row">
+      <label>Speed <input id="speed" type="range" min="0" max="20" value="15" oninput="spv.textContent=this.value"></label>
+      <span id="spv" class="num">15</span><span class="muted">cm/s</span>
+      <button onclick="cmd('speed '+$('speed').value)">Set</button>
+    </div>
+    <div class="row" style="margin-bottom:0">
+      <button onclick="cmd('ping')">Ping</button>
+      <button onclick="cmd('reset_peak')">Reset hump peak</button>
+      <button onclick="cmd('summary')">Summary now</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Event log</h2>
+    <div id="log" class="log"></div>
+    <div class="muted" id="root" style="margin-top:6px"></div>
+  </section>
+
+</div>
 </main>
+
 <script>
 const $ = id => document.getElementById(id);
 const fmt = (x, d=1) => (x === null || x === undefined) ? '-' : Number(x).toFixed(d);
+const cmOr = v => (v === null || v === undefined || v >= 255) ? 'none in range' : v + ' cm';
 
+// ---- plain words -------------------------------------------------------
+const STATE_TEXT = {
+  IDLE: ['waiting for Start', 'stop'], LINE_FOLLOW: ['following the line', 'run'],
+  TURNING: ['junction move', 'run'], ON_HUMP: ['on a hump', 'run'],
+  OBSTACLE_SCAN: ['scanning an obstacle', 'run'], AVOIDING: ['going round the obstacle', 'run'],
+  LINE_RECOVERY: ['finding the line again', 'run'], STOPPED: ['stopped', 'stop'], ERROR: ['stopped by a fault', 'err']};
+const FAULT_TEXT = {
+  MQTT_ESTOP: 'E-STOP from the laptop', LINE_UNCAL: 'line sensors not calibrated',
+  COLLISION: 'lifted or overturned (IMU)', MOTOR_STALL: 'a motor stalled', ENC_FAULT: 'wheel counter fault',
+  IMU_FAULT: 'IMU not answering', TASK_HUNG: 'a task froze', US_NO_ECHO: 'ultrasonic: no echo',
+  NO_SAFE_ROUTE: 'obstacle: no way round', US_TIMEOUT: 'ultrasonic timed out', NO_LINE: 'line not found after a bypass',
+  WIFI_LOSS: 'Wi-Fi dropped'};
+
+// ---- log ----------------------------------------------------------------
 function addLog(cls, text) {
-  const d = new Date();
-  const t = d.toTimeString().slice(0, 8);
+  const t = new Date().toTimeString().slice(0, 8);
   const line = document.createElement('div');
-  line.innerHTML = `<span class="t">${t}</span> <span class="${cls}">${text.replace(/</g, '&lt;')}</span>`;
+  line.innerHTML = `<span class="t">${t}</span> <span class="${cls}">${String(text).replace(/</g, '&lt;')}</span>`;
   const log = $('log');
+  const atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
   log.appendChild(line);
   while (log.childElementCount > 400) log.removeChild(log.firstChild);
-  log.scrollTop = log.scrollHeight;
+  if (atEnd) log.scrollTop = log.scrollHeight;
 }
 
+// ---- commands -----------------------------------------------------------
 async function post(path, body) {
   try {
-    const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
+    const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body || {})});
     const j = await r.json();
     if (!r.ok) { addLog('warn', 'not sent: ' + j.error); return null; }
     return j;
@@ -195,8 +307,40 @@ async function clearMap() {
   if (j) addLog('', j.sent);
 }
 
+// ---- speed chart (last 60 s) ---------------------------------------------
+const hist = [];
+const HIST_S = 60;
+function drawChart() {
+  const c = $('chart'), g = c.getContext('2d');
+  const w = c.width = c.clientWidth * devicePixelRatio, h = c.height = c.clientHeight * devicePixelRatio;
+  g.clearRect(0, 0, w, h);
+  const now = Date.now() / 1000;
+  while (hist.length && hist[0][0] < now - HIST_S) hist.shift();
+  const top = Math.max(20, ...hist.map(p => Math.max(Math.abs(p[1]), Math.abs(p[2])))) * 1.1;
+  const css = getComputedStyle(document.documentElement);
+  g.strokeStyle = css.getPropertyValue('--line'); g.lineWidth = 1;
+  [0.25, 0.5, 0.75].forEach(f => { g.beginPath(); g.moveTo(0, h * f); g.lineTo(w, h * f); g.stroke(); });
+  g.fillStyle = css.getPropertyValue('--dim'); g.font = `${11 * devicePixelRatio}px system-ui`;
+  g.fillText(Math.round(top) + ' cm/s', 6 * devicePixelRatio, 14 * devicePixelRatio);
+  [[1, '--left'], [2, '--right']].forEach(([k, col]) => {
+    g.strokeStyle = css.getPropertyValue(col); g.lineWidth = 2 * devicePixelRatio; g.beginPath();
+    hist.forEach((p, i) => {
+      const x = w - (now - p[0]) / HIST_S * w, y = h - Math.max(0, p[k]) / top * h;
+      i ? g.lineTo(x, y) : g.moveTo(x, y);
+    });
+    g.stroke();
+  });
+}
+let chartPending = false;
+function queueChart() { if (!chartPending) { chartPending = true; requestAnimationFrame(() => { chartPending = false; drawChart(); }); } }
+addEventListener('resize', queueChart);
+
+// ---- live -----------------------------------------------------------------
 function showLive(d) {
-  $('st').textContent = d.state;
+  const [desc, cls] = STATE_TEXT[d.state] || ['', ''];
+  $('st').textContent = d.state.replace('_', ' ');
+  $('st').className = 'state ' + cls;
+  $('stdesc').textContent = desc;
   $('dist').innerHTML = `${d.dist}<span class="u">cm</span>`;
   $('spd').innerHTML = `${fmt(d.speed_l)} / ${fmt(d.speed_r)}<span class="u">cm/s</span>`;
   $('pitch').innerHTML = `${fmt(d.pitch)}<span class="u">°</span>`;
@@ -204,54 +348,94 @@ function showLive(d) {
   $('motion').textContent = d.motion;
   $('peak').innerHTML = `${fmt(d.peak)}<span class="u">cm</span>`;
   const l = d.line_bits & 1, r = (d.line_bits >> 1) & 1;
-  $('sL').className = 'sensor ' + (l ? 'black' : 'white'); $('sL').textContent = l ? 'BLACK' : 'WHITE';
-  $('sR').className = 'sensor ' + (r ? 'black' : 'white'); $('sR').textContent = r ? 'BLACK' : 'WHITE';
-  $('onl').textContent = d.on_line ? 'line: on' : 'line: LOST';
+  $('sL').className = 'sensor ' + (l ? 'black' : 'white'); $('sL').innerHTML = (l ? 'BLACK' : 'WHITE') + '<small>left</small>';
+  $('sR').className = 'sensor ' + (r ? 'black' : 'white'); $('sR').innerHTML = (r ? 'BLACK' : 'WHITE') + '<small>right</small>';
+  $('onl').textContent = d.on_line ? '' : '· line LOST';
   $('pos').textContent = (d.line_pos > 0 ? '+' : '') + d.line_pos;
   // + = line under the LEFT sensor (car should turn left): dot moves left
   $('dot').style.left = (50 - d.line_pos / 64 * 50) + '%';
-  const f = $('faults');
-  f.textContent = 'Faults: ' + d.faults_text + (d.faults ? ` (0x${d.faults.toString(16).padStart(4, '0')})` : '');
-  f.className = 'faults' + (d.faults ? ' on' : '');
+  showFaults(d.faults, d.faults_text);
   $('lost').textContent = 'lost ' + d.lost;
+  hist.push([Date.now() / 1000, d.speed_l, d.speed_r]);
+  queueChart();
+}
+function showFaults(mask, text) {
+  const f = $('faults');
+  if (!mask) { f.innerHTML = '<span class="chip ok">none</span>'; return; }
+  f.innerHTML = text.split(', ').map(n => `<span class="chip" title="${n}">${FAULT_TEXT[n] || n}</span>`).join('') +
+    `<span class="muted">0x${mask.toString(16).padStart(4, '0')} · Start clears most of them</span>`;
 }
 function showHb(h) {
-  $('rssi').textContent = h.rssi === null ? 'wifi: -' : `wifi ${h.rssi} dBm`;
-  $('up').textContent = `up ${h.uptime} s, reconnects ${h.reconnects}, drops cmd ${h.cmd_drop} / ev ${h.ev_drop}`;
+  const r = $('rssi');
+  r.textContent = h.rssi === null ? 'wifi -' : `wifi ${h.rssi} dBm`;
+  r.className = 'pill ' + (h.rssi === null ? '' : (h.rssi > -70 ? 'ok' : 'warn'));
+  $('up').textContent = `up ${h.uptime} s`;
+  $('up').title = `reconnects ${h.reconnects}, dropped cmd ${h.cmd_drop} / events ${h.ev_drop}`;
   $('cmap').textContent = h.car_map || '-';
 }
 function showBarcode(b) {
   const el = $('bar');
-  if (b.letter) {
-    el.textContent = b.letter + ' → ' + b.move;
-    el.style.color = '';
-  } else {
-    el.textContent = 'unreadable (' + b.unreadable + ')';
-    el.style.color = 'var(--warn)';
-  }
+  if (b.letter) { el.textContent = b.letter + ' → ' + b.move; el.style.color = ''; }
+  else { el.textContent = 'unreadable (' + b.unreadable + ' so far)'; el.style.color = 'var(--warn)'; }
   addLog('ev', 'barcode: ' + b.text);
 }
+
+// ---- obstacle (top view: car at the bottom, obstacle ahead) ---------------
+function showObstacle(o) {
+  $('oDist').textContent = cmOr(o.dist);
+  $('oWidth').textContent = o.width ? o.width + ' cm' : 'unknown';
+  $('oL').textContent = cmOr(o.clear_l);
+  $('oR').textContent = cmOr(o.clear_r);
+  $('oPlan').textContent = ({LEFT:'go round LEFT', RIGHT:'go round RIGHT', REVERSE:'back up and rescan',
+                             STOP:'stop (no way round)', CONTINUE:'carry on'})[o.plan] || o.plan;
+  $('oTime').textContent = 'scan at ' + o.t;
+  const S = 2;                                    // px per cm
+  const carY = 140, cx = 75;
+  const dist = (o.dist >= 255) ? 60 : Math.min(o.dist, 60);
+  const wid = Math.max(4, Math.min(o.width || 10, 60));
+  const oy = carY - dist * S;
+  const freeL = (o.clear_l >= 255) ? null : o.clear_l, freeR = (o.clear_r >= 255) ? null : o.clear_r;
+  let svg = `<line x1="${cx}" y1="8" x2="${cx}" y2="${carY}" stroke="#555" stroke-dasharray="3 3"/>`;
+  svg += `<rect x="${cx - wid * S / 2}" y="${oy - 14}" width="${wid * S}" height="14" rx="2" fill="#f25c5c" opacity=".85"/>`;
+  if (freeL !== null) svg += `<rect x="${cx - wid * S / 2 - freeL * S}" y="${oy - 14}" width="${freeL * S}" height="14" fill="#f2b63c" opacity=".25"/>`;
+  if (freeR !== null) svg += `<rect x="${cx + wid * S / 2}" y="${oy - 14}" width="${freeR * S}" height="14" fill="#f2b63c" opacity=".25"/>`;
+  svg += `<rect x="${cx - 15}" y="${carY}" width="30" height="24" rx="4" fill="#4da3ff"/>`;
+  svg += `<text x="${cx}" y="${carY + 16}" font-size="10" text-anchor="middle" fill="#0e1116">car</text>`;
+  if (o.plan === 'LEFT' || o.plan === 'RIGHT') {
+    const s = o.plan === 'LEFT' ? -1 : 1, x2 = cx + s * (wid * S / 2 + 18);
+    svg += `<path d="M${cx} ${carY - 2} L${x2} ${oy + 18} L${x2} ${oy - 30} L${cx} ${oy - 46}" fill="none" stroke="#3ccf6c" stroke-width="2" stroke-dasharray="4 3"/>`;
+  }
+  svg += `<text x="${cx}" y="${oy - 18}" font-size="10" text-anchor="middle" fill="#e6e9ee">${o.width ? o.width + ' cm wide' : ''}</text>`;
+  svg += `<text x="${cx + 4}" y="${(oy + carY) / 2}" font-size="10" fill="#8b95a4">${o.dist >= 255 ? '' : o.dist + ' cm'}</text>`;
+  $('osvg').innerHTML = svg;
+}
+function showHump(h) {
+  $('hump').textContent = `last hump ${h.peak} cm high, ${h.dist} cm into the run (${h.t})`;
+}
+
+// ---- run summary ------------------------------------------------------------
 function showSummary(s) {
   const f = s.fields;
   const items = [
-    ['Run', f.run], ['Status', (s.text.match(/(so far \([A-Z_]+\)|ended [A-Z_]+)/) || ['-'])[0]],
-    ['Duration', f.duration + ' s'], ['Distance', f.dist + ' cm'], ['Top speed', f.max_speed + ' cm/s'],
-    ['Barcodes read', f.n_barcode + (s.letters ? ' (' + s.letters + ')' : '')], ['Unreadable', f.n_unreadable],
-    ['Junction moves', f.n_junction], ['Unmapped junctions', f.n_unmapped],
-    ['Humps', f.n_hump], ['Highest hump', f.peak + ' cm'],
-    ['Obstacles', f.n_obst], ['Closest obstacle', f.obst_min >= 255 ? 'none' : f.obst_min + ' cm'],
-    ['Faults seen', '0x' + f.faults_seen.toString(16).padStart(4, '0')],
-    ['Reconnects', f.reconnects], ['Events dropped', f.ev_drop]];
+    ['Run', f.run], ['Result', (s.text.match(/(so far \([A-Z_]+\)|ended [A-Z_]+)/) || ['-'])[0]],
+    ['Time', f.duration + ' s'], ['Distance', f.dist + ' cm'], ['Top speed', f.max_speed + ' cm/s'],
+    ['Humps', f.n_hump + (f.n_hump ? ` (max ${f.peak} cm)` : '')],
+    ['Obstacles', f.n_obst + (f.obst_min < 255 ? ` (closest ${f.obst_min} cm)` : '')],
+    ['Barcodes', f.n_barcode + (s.letters ? ' ' + s.letters : '') + (f.n_unreadable ? `, ${f.n_unreadable} unreadable` : '')],
+    ['Junctions', f.n_junction + (f.n_unmapped ? `, ${f.n_unmapped} unmapped` : '')],
+    ['Faults', f.faults_seen ? '0x' + f.faults_seen.toString(16).padStart(4, '0') : 'none']];
   $('sum').innerHTML = items.map(([k, v]) => `<div><span class="muted">${k}</span><br><b>${v}</b></div>`).join('');
   const c = $('sumcheck');
   c.textContent = 'Check against the raw events: ' + s.check;
-  c.className = 'check ' + (s.check.startsWith('matches') ? 'ok' : (s.check.startsWith('DIFFERS') ? 'bad' : ''));
+  c.className = 'check ' + (s.check.startsWith('matches') ? 'ok' : (s.check.startsWith('DIFFERS') ? 'bad' : 'muted'));
 }
+
+// ---- messages from dashboard.py ------------------------------------------------
+function setMqtt(on) { $('mqtt').className = 'pill ' + (on ? 'ok' : 'bad'); $('mqtt').textContent = on ? 'broker: on' : 'broker: off'; }
 function apply(kind, d) {
   if (kind === 'snapshot') {
-    $('root').textContent = `${d.root}/#  via  ${d.broker}`;
-    $('mqtt').className = 'pill ' + (d.mqtt ? 'ok' : 'bad');
-    $('mqtt').textContent = d.mqtt ? 'broker: connected' : 'broker: not connected';
+    $('root').textContent = `topics ${d.root}/# via ${d.broker}`;
+    setMqtt(d.mqtt);
     if (d.status) apply('status', d.status);
     if (d.live) showLive(d.live);
     if (d.odom) apply('odom', d.odom);
@@ -261,21 +445,31 @@ function apply(kind, d) {
     if (d.map_ack) $('mack').textContent = d.map_ack;
     if (d.summary) showSummary(d.summary);
     if (d.barcode) showBarcode(d.barcode);
-  } else if (kind === 'mqtt') {
-    $('mqtt').className = 'pill ' + (d.connected ? 'ok' : 'bad');
-    $('mqtt').textContent = d.connected ? 'broker: connected' : 'broker: not connected';
-  } else if (kind === 'status') {
+    if (d.obstacle) showObstacle(d.obstacle);
+    if (d.hump) showHump(d.hump);
+  } else if (kind === 'mqtt') setMqtt(d.connected);
+  else if (kind === 'status') {
     $('car').className = 'pill ' + (d.online ? 'ok' : 'bad');
-    $('car').textContent = d.online ? `car: online (layout v${d.version})` : 'car: OFFLINE';
+    $('car').textContent = d.online ? 'car: online' : 'car: OFFLINE';
     addLog(d.online ? 'ack' : 'warn', 'car ' + d.text);
   } else if (kind === 'live') showLive(d);
   else if (kind === 'odom') $('enc').textContent = `${d.enc_l} / ${d.enc_r}`;
   else if (kind === 'heartbeat') showHb(d);
   else if (kind === 'broker_map') { $('bmap').textContent = d.map; addLog('', 'map on broker: ' + d.map); }
   else if (kind === 'map_ack') { $('mack').textContent = d.text; addLog('ack', 'map ack: ' + d.text); }
-  else if (kind === 'ack') { $('ack').textContent = d.text; addLog('ack', 'ack: ' + d.text); }
+  else if (kind === 'ack') {
+    $('ack').textContent = d.text; addLog('ack', 'ack: ' + d.text);
+    // Calibrate now: the timer starts only when the car says it has begun
+    if (d.text.startsWith('CALIBRATE: accepted')) startCal(1);
+    else if (d.text.startsWith('CALIBRATE: rejected')) {
+      stopCal();
+      $('cal').innerHTML = 'Not calibrating<small>The car said no: it is driving, or still calibrating. Wait a few seconds and press again.</small>';
+    }
+  }
   else if (kind === 'summary') { showSummary(d); addLog('ev', 'run summary: ' + d.text + ' | ' + d.check); }
   else if (kind === 'barcode') showBarcode(d);
+  else if (kind === 'obstacle') showObstacle(d);
+  else if (kind === 'hump') showHump(d);
   else if (kind === 'event') addLog('ev', d.topic + ': ' + d.text);
   else if (kind === 'sent') addLog('', d.text);
 }
@@ -288,18 +482,25 @@ function connect() {
 }
 connect();
 
-// ---- calibration guide: a timer matching the car's boot sequence ----
-// boot ~10 s (USB wait) | "black" warning 3 s | hold black 3 s | "white" warning 3 s | hold white 3 s
-const CAL = [[10, 'wait', 'Booting', 'wait, keep the car still'],
+// ---- calibration timer ------------------------------------------------------------
+// power-on: boot ~10 s | "black" warning 3 s | hold black 3 s | "white" warning 3 s | hold white 3 s
+const CAL = [[10, 'wait', 'Booting', 'keep the car still'],
              [3, 'wait', 'Get ready: BLACK', 'both front sensors over the black line in'],
              [3, 'black', 'HOLD ON BLACK', 'both front sensors on the black line, do not move'],
              [3, 'wait', 'Get ready: WHITE', 'both front sensors over white in'],
              [3, 'white', 'HOLD ON WHITE', 'both front sensors on white, do not move'],
-             [0, '', 'Done: car is READY', 'press Start when you want it to go']];
+             [0, '', 'Done: car is READY', 'put it on the line and press Start']];
 let calT = null;
-function startCal() {
+async function calNow() {
+  const j = await post('/cmd', {line: 'calibrate'});
+  if (!j) return;
+  addLog('', `sent ${j.sent} (byte ${j.byte})`);
   stopCal();
-  let i = 0, left = CAL[0][0];
+  $('cal').innerHTML = 'Asking the car...<small>The timer starts when the car answers.</small>';
+}
+function startCal(first = 0) {
+  stopCal();
+  let i = first, left = CAL[first][0];
   const tick = () => {
     const [, cls, big, small] = CAL[i];
     $('cal').className = 'cal ' + cls;
@@ -314,7 +515,7 @@ function stopCal() {
   if (calT) clearTimeout(calT);
   calT = null;
   $('cal').className = 'cal';
-  $('cal').innerHTML = 'Not running<small>Press the button the moment you power the car on.</small>';
+  $('cal').innerHTML = 'Not running<small>Press Calibrate now with the car stopped on the track.</small>';
 }
 </script>
 </body>

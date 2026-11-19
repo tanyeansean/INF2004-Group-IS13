@@ -28,6 +28,12 @@
 #define IMU_AUTO_INC		(0x80U)	/* read X, Y, Z in one go */
 #define IMU_CTRL1_100HZ_XYZ	(0x67U)
 #define IMU_CTRL2_4G		(0x08U)
+/* Added 19 Nov by Jin: identity check, sensor reboot, stuck reading. */
+#define IMU_WHO_AM_I		(0x0FU)
+#define IMU_WHO_AM_I_LSM303D	(0x49U)
+#define IMU_CTRL0		(0x1FU)
+#define IMU_CTRL0_BOOT		(0x80U)
+#define IMU_RAW_STUCK		((H)-32768)
 
 /* ---- pins ---- */
 #define S4_PIN_SDA		(2U)
@@ -138,16 +144,118 @@ LOCAL ER imu_write_reg(UW reg, UW val)
 	}
 }
 
-/* Start I2C1 and the sensor.  An error means the sensor didn't answer. */
+/* Read one sensor register (added 19 Nov by Jin). */
+LOCAL ER imu_read_reg(UW reg, UB *p_val)
+{
+	UW const start = in_w(S4_TIMERAWL);
+
+	i2c1_begin();
+	out_w(I2C1_DATA_CMD, reg);
+	out_w(I2C1_DATA_CMD, I2C_CMD_READ | I2C_CMD_RESTART | I2C_CMD_STOP);
+	for (;;) {
+		if ((in_w(I2C1_RAW_INTR) & I2C_INTR_TX_ABRT) != 0U) {
+			return E_IO;
+		}
+		if (in_w(I2C1_RXFLR) != 0U) {
+			*p_val = (UB)(in_w(I2C1_DATA_CMD) & 0xFFU);
+			return E_OK;
+		}
+		if ((in_w(S4_TIMERAWL) - start) > I2C_TIMEOUT_US) {
+			return i2c1_timed_out();
+		}
+	}
+}
+
+/* Busy-wait us microseconds on the 1 us TIMER. */
+LOCAL void delay_us(UW us)
+{
+	UW const start = in_w(S4_TIMERAWL);
+
+	while ((in_w(S4_TIMERAWL) - start) < us) {
+		;
+	}
+}
+
+/* I2C bus clear (added 19 Nov by Jin).  Car tests 19 Nov: after the
+   Pico restarted (firmware load, reset) while the power bank kept the
+   GY-511 powered, the sensor sometimes gave X = Y = Z = -4.00 g on every
+   read until the whole car was switched off.  One known cause: the Pico
+   restarts in the middle of a read, the sensor is still sending a byte
+   and holds SDA low, and every later transfer is garbled.  The standard
+   cure is to clock SCL by hand up to 9 times until the sensor lets go of
+   SDA, then send a STOP.  The pins are driven open-drain style: output
+   value 0, and "output enable" on = low, off = released (pull-up). */
+#define S4_SIO_BASE		(0xD0000000U)
+#define S4_SIO_GPIO_IN		(S4_SIO_BASE + 0x04U)
+#define S4_SIO_GPIO_OUT_CLR	(S4_SIO_BASE + 0x18U)
+#define S4_SIO_GPIO_OE_SET	(S4_SIO_BASE + 0x24U)
+#define S4_SIO_GPIO_OE_CLR	(S4_SIO_BASE + 0x28U)
+#define S4_FUNCSEL_SIO		(5U)
+#define S4_BUS_HALF_US		(5U)	/* 100 kHz */
+
+LOCAL void pin_low(UW pin)     { out_w(S4_SIO_GPIO_OE_SET, 1U << pin); }
+LOCAL void pin_release(UW pin) { out_w(S4_SIO_GPIO_OE_CLR, 1U << pin); }
+
+LOCAL void i2c1_bus_clear(void)
+{
+	UW const	sda = 1U << S4_PIN_SDA;
+	INT		i;
+
+	out_w(S4_SIO_GPIO_OUT_CLR, sda | (1U << S4_PIN_SCL));
+	pin_release(S4_PIN_SDA);
+	pin_release(S4_PIN_SCL);
+	out_w(S4_PAD(S4_PIN_SDA), S4_PAD_I2C);
+	out_w(S4_PAD(S4_PIN_SCL), S4_PAD_I2C);
+	out_w(S4_GPIO_CTRL(S4_PIN_SDA), S4_FUNCSEL_SIO);
+	out_w(S4_GPIO_CTRL(S4_PIN_SCL), S4_FUNCSEL_SIO);
+	delay_us(S4_BUS_HALF_US);
+
+	for (i = 0; (i < 9) && ((in_w(S4_SIO_GPIO_IN) & sda) == 0U); i++) {
+		pin_low(S4_PIN_SCL);
+		delay_us(S4_BUS_HALF_US);
+		pin_release(S4_PIN_SCL);
+		delay_us(S4_BUS_HALF_US);
+	}
+	/* STOP: SDA goes high while SCL is high. */
+	pin_low(S4_PIN_SDA);
+	delay_us(S4_BUS_HALF_US);
+	pin_release(S4_PIN_SCL);
+	delay_us(S4_BUS_HALF_US);
+	pin_release(S4_PIN_SDA);
+	delay_us(S4_BUS_HALF_US);
+}
+
+/* Start I2C1 and the sensor.  An error means the sensor didn't answer.
+   19 Nov (Jin): first clear the bus, then reboot the sensor's own
+   memory (CTRL0 BOOT: reloads its factory trimming, the closest thing to
+   switching it off and on that software can do), then set it up again. */
 EXPORT ER drv_imu_init(void)
 {
-	ER er;
+	ER	er;
+	UB	who = 0U;
 
+	i2c1_bus_clear();
 	out_w(S4_GPIO_CTRL(S4_PIN_SDA), S4_FUNCSEL_I2C);
 	out_w(S4_PAD(S4_PIN_SDA), S4_PAD_I2C);
 	out_w(S4_GPIO_CTRL(S4_PIN_SCL), S4_FUNCSEL_I2C);
 	out_w(S4_PAD(S4_PIN_SCL), S4_PAD_I2C);
 	i2c1_setup();
+
+	/* Which chip answers: LSM303D says 0x49.  Only printed, never a
+	   reason to stop, in case the board carries a close relative. */
+	er = imu_read_reg(IMU_WHO_AM_I, &who);
+	if (er < E_OK) {
+		return er;
+	}
+	if (who != IMU_WHO_AM_I_LSM303D) {
+		tm_printf((UB *)"[imu] note: WHO_AM_I = 0x%02x (LSM303D is 0x49)\n", (UINT)who);
+	}
+
+	er = imu_write_reg(IMU_CTRL0, IMU_CTRL0_BOOT);
+	if (er < E_OK) {
+		return er;
+	}
+	tk_dly_tsk(20);			/* the reboot takes a few ms */
 
 	er = imu_write_reg(IMU_CTRL1, IMU_CTRL1_100HZ_XYZ);
 	if (er < E_OK) {
@@ -187,5 +295,11 @@ EXPORT ER drv_imu_read(H *p_x, H *p_y, H *p_z)
 	*p_x = (H)(((UH)buf[1] << 8) | buf[0]);
 	*p_y = (H)(((UH)buf[3] << 8) | buf[2]);
 	*p_z = (H)(((UH)buf[5] << 8) | buf[4]);
+	/* 19 Nov (Jin): -4.00 g on all three axes at once (raw -32768) is
+	   not a real reading: it is the stuck state seen on the car.  Count
+	   it as a failed read, so the task restarts the sensor. */
+	if ((*p_x == IMU_RAW_STUCK) && (*p_y == IMU_RAW_STUCK) && (*p_z == IMU_RAW_STUCK)) {
+		return E_IO;
+	}
 	return E_OK;
 }

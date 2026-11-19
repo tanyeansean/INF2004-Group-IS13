@@ -61,6 +61,81 @@ static int32_t lateral_q8(uint8_t angle_deg, uint8_t dist_cm)
 	return ((int32_t)dist_cm * oa_sin_q15(offset_deg)) / Q15_TO_Q8;
 }
 
+/* ---- Width from the edges (added 19 Nov by Jin) ---------------------- */
+
+/* Angle of reading i from straight ahead, + = left (as lateral_q8). */
+static int32_t offset_from_centre(oa_scan_t const *p_scan, uint8_t i)
+{
+	int32_t off = (int32_t)scan_angle(p_scan, i) - (int32_t)OA_SERVO_CENTRE_DEG;
+#if (OA_SERVO_LEFT_IS_HIGH == 0)
+	off = -off;
+#endif
+	return off;
+}
+
+/* Half the ultrasonic beam at distance d_cm, in degrees (measured, see
+   OA_BEAM_HALF_DEG in obstacle_config.h). */
+static int32_t beam_half_deg(int32_t d_cm)
+{
+	int32_t beam = (int32_t)OA_BEAM_HALF_DEG;
+
+	if (d_cm > (int32_t)OA_BEAM_GROW_FROM_CM) {
+		beam += ((d_cm - (int32_t)OA_BEAM_GROW_FROM_CM) * (int32_t)OA_BEAM_GROW_PER_CM_X100) / 100;
+	}
+	return (beam > (int32_t)OA_BEAM_HALF_MAX_DEG) ? (int32_t)OA_BEAM_HALF_MAX_DEG : beam;
+}
+
+/* d * tan(deg) in Q8 cm, deg in -80..80 (tan = sin / cos from the table). */
+static int32_t d_tan_q8(int32_t d_cm, int32_t deg)
+{
+	int32_t	tan_q8;
+
+	if (deg > 80) {
+		deg = 80;
+	} else if (deg < -80) {
+		deg = -80;
+	} else {
+		/* In range. */
+	}
+	/* sin * 256 <= 8.4e6, tan(80) * 256 ~ 1452, * 254 cm: no overflow. */
+	tan_q8 = (oa_sin_q15(deg) * Q8_ONE) / oa_sin_q15(90 - ((deg < 0) ? -deg : deg));
+	return d_cm * tan_q8;
+}
+
+/* Sideways position (Q8 cm, + = left) of the obstacle's two corners. If
+   the beam is wider than the obstacle can be told apart, both sit at the
+   middle of what was seen. */
+static void corrected_edges_q8(oa_scan_t const *p_scan, uint8_t lo, uint8_t hi,
+			       uint8_t d_cm, int32_t *p_left_q8, int32_t *p_right_q8)
+{
+	int32_t const	off_lo = offset_from_centre(p_scan, lo);
+	int32_t const	off_hi = offset_from_centre(p_scan, hi);
+	int32_t const	off_left  = (off_lo > off_hi) ? off_lo : off_hi;	/* furthest left hit  */
+	int32_t const	off_right = (off_lo > off_hi) ? off_hi : off_lo;	/* furthest right hit */
+	int32_t const	half_step = (int32_t)p_scan->step_deg / 2;
+	int32_t const	beam = beam_half_deg((int32_t)d_cm);
+	/* Where the corners really are, from straight ahead (+ = left). */
+	int32_t		corner_left  = off_left + half_step - beam;
+	int32_t		corner_right = off_right - half_step + beam;
+
+	if (corner_left <= corner_right) {
+		corner_left  = (off_left + off_right) / 2;	/* narrower than the beam can tell */
+		corner_right = corner_left;
+	}
+	*p_left_q8  = d_tan_q8((int32_t)d_cm, corner_left);
+	*p_right_q8 = d_tan_q8((int32_t)d_cm, corner_right);
+}
+
+static int32_t corrected_width_q8(oa_scan_t const *p_scan, uint8_t lo, uint8_t hi,
+				  uint8_t d_cm)
+{
+	int32_t	left_q8;
+	int32_t	right_q8;
+
+	corrected_edges_q8(p_scan, lo, hi, d_cm, &left_q8, &right_q8);
+	return (left_q8 > right_q8) ? (left_q8 - right_q8) : 0;
+}
+
 static bool is_hit(uint8_t dist_cm)
 {
 	return (dist_cm <= OA_OBSTACLE_RANGE_CM);	/* 255 is never a hit. */
@@ -188,11 +263,19 @@ void profile_build(oa_scan_t const *p_scan, oa_profile_t *p_prof)
 	}
 
 	/*
-	 * 4. Width. The beam is ~15 deg wide, so edges are seen early and the
-	 *    raw width is too big by about 2 * d * tan(half beam). TUNE on A3.
+	 * 4. Width, per edge (Jin, 19 Nov; replaces raw width minus
+	 *    2 * d * tan(7.5 deg)). The sensor reports the nearest thing
+	 *    anywhere in its cone, so it keeps seeing the obstacle until the
+	 *    cone's EDGE leaves its corner: the corner is really at
+	 *    (last angle with a hit + half a step - half the beam) from
+	 *    straight ahead, on each side, and its sideways position is
+	 *    closest distance * tan(that angle).  Half the beam was measured
+	 *    on the car (10 cm box, 19 Nov): ~20 deg up to 35 cm, wider
+	 *    further away (~31 deg at 48 cm): see beam_half_deg().  That
+	 *    gave 11, 8 and 10 cm for the 10 cm box at 18, 34 and 48 cm,
+	 *    where the old maths said 22, 23 and 47.
 	 */
-	width = (y_left - y_right)
-	      - ((2 * (int32_t)p_scan->dist_cm[closest] * OA_TAN_HALF_BEAM_Q15) / Q15_TO_Q8);
+	width = corrected_width_q8(p_scan, lo, hi, p_scan->dist_cm[closest]);
 
 	/* 5. Side clearance: nearest thing outside the cluster on each side.
 	      Only hits (<= OA_OBSTACLE_RANGE_CM) count: only the lateral
@@ -258,15 +341,12 @@ void profile_build(oa_scan_t const *p_scan, oa_profile_t *p_prof)
 	 *    erring wide there is the safe side.
 	 */
 	{
-		int32_t const	beam = ((int32_t)p_scan->dist_cm[closest] * OA_TAN_HALF_BEAM_Q15)
-				       / Q15_TO_Q8;
-		int32_t		edge_l = y_left - beam;
-		int32_t		edge_r = y_right + beam;
+		/* Measured, per-edge beam correction (Jin, 19 Nov), the same as
+		   the width in step 4 (was d * tan(7.5 deg) off each raw edge). */
+		int32_t		edge_l;
+		int32_t		edge_r;
 
-		if (edge_l < edge_r) {
-			edge_l = (y_left + y_right) / 2;
-			edge_r = edge_l;
-		}
+		corrected_edges_q8(p_scan, lo, hi, p_scan->dist_cm[closest], &edge_l, &edge_r);
 		p_prof->left_edge_cm  = q8_to_cm(edge_l);
 		p_prof->right_edge_cm = q8_to_cm(edge_r);
 	}

@@ -46,9 +46,16 @@ IMPORT BOOL	s3_is_calibrated(void);
 IMPORT void	s3_request_line_reset(void);
 IMPORT BOOL	s3_line_reset_pending(void);
 
+/* Redo the front-sensor calibration now (added 19 Nov by Jin; sent from
+   the laptop's "Calibrate now" button).  Only while the car is stopped:
+   the caller checks.  s3_is_calibrated() is FALSE until it is done, so a
+   START during it is refused.  If it fails, the old calibration stays. */
+IMPORT void	s3_request_recalibrate(void);
+
 /* Private to subsystem 3 */
 IMPORT ID	flg_s3;
 #define S3_FLG_LINE_RESET	(1U << 0)
+#define S3_FLG_RECAL		(1U << 1)	/* Jin, 19 Nov */
 IMPORT void	line_task(INT stacd, void *exinf);
 IMPORT void	barcode_task(INT stacd, void *exinf);
 IMPORT UW	s3_now_ms(void);

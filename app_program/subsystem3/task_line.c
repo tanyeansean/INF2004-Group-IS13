@@ -94,6 +94,16 @@ LOCAL BOOL calibrate(line_follow_cfg_t *cfg)
 	return TRUE;
 }
 
+/* Dashboard "Calibrate now" (added 19 Nov by Jin): TRUE once per request
+   (s3_request_recalibrate(); the bit is cleared as it is read). */
+LOCAL BOOL recal_requested(void)
+{
+	UINT	ptn = 0U;
+
+	return (tk_wai_flg(flg_s3, S3_FLG_RECAL, TWF_ORW | TWF_BITCLR, &ptn, TMO_POL) == E_OK)
+	       ? TRUE : FALSE;
+}
+
 EXPORT void line_task(INT stacd, void *exinf)
 {
 	line_follow_cfg_t	cfg;
@@ -111,9 +121,14 @@ EXPORT void line_task(INT stacd, void *exinf)
 	tm_printf((UB *)"Commands work only AFTER calibration (when READY is printed).\n");
 
 	if ((er < E_OK) || !calibrate(&cfg)) {
-		tm_printf((UB *)"CALIBRATION FAILED - halting (motors off)\n");
+		tm_printf((UB *)"CALIBRATION FAILED - halting (motors off)."
+			  " Press 'Calibrate now' on the dashboard to try again.\n");
 		for (;;) {
 			wait_ms(100U);		/* stay alive, never report a line */
+			/* Retry from the dashboard (Jin, 19 Nov). */
+			if ((er >= E_OK) && recal_requested() && calibrate(&cfg)) {
+				break;
+			}
 		}
 	}
 
@@ -132,6 +147,28 @@ EXPORT void line_task(INT stacd, void *exinf)
 		if (tk_wai_flg(flg_s3, S3_FLG_LINE_RESET, TWF_ORW, &ptn, TMO_POL) == E_OK) {
 			line_follow_reset(&state);
 			(void)tk_clr_flg(flg_s3, ~S3_FLG_LINE_RESET);
+		}
+
+		/* Dashboard "Calibrate now" (Jin, 19 Nov).  Telemetry only
+		   passes it on while the car is stopped.  No line messages go
+		   out meanwhile (as at boot), and START is refused because
+		   s3_is_calibrated() is FALSE.  A failed try keeps the old
+		   calibration, so the car is never left without one. */
+		if (recal_requested()) {
+			line_follow_cfg_t	cfg_new = cfg;
+
+			s3_calibrated = 0U;
+			tm_printf((UB *)"[line] calibrating again (dashboard)\n");
+			if (calibrate(&cfg_new)) {
+				cfg = cfg_new;
+			} else {
+				tm_printf((UB *)"[line] calibration failed - keeping the old one\n");
+			}
+			line_follow_reset(&state);
+			s3_calibrated = 1U;
+			tm_printf((UB *)"READY. Send 'start' over MQTT or press GP20. GP20 again = stop.\n");
+			next_ms = s3_now_ms();
+			continue;
 		}
 
 		s.left_adc   = drv_track_read_left();

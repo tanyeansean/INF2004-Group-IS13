@@ -24,6 +24,10 @@
 #define S1_PERIOD_MS		10
 #define S1_STATUS_PER_POLL	16
 
+/* Added 19 Nov by Jin: see update_motion() and on_state() below. */
+LOCAL W		g_dist_base_mm;		/* car-centre distance at START */
+LOCAL BOOL	g_b_running = FALSE;	/* last state was a running one */
+
 /* Laptop command -> Mission Control's cmd_q (comms.h: runs in this task). */
 LOCAL bool on_command(comms_cmd_t const *p_cmd)
 {
@@ -34,6 +38,22 @@ LOCAL bool on_command(comms_cmd_t const *p_cmd)
 		return true;
 	case CMD_SUMMARY:
 		telem_publish_summary();	/* run totals so far */
+		return true;
+	case CMD_CALIBRATE:
+		/* Dashboard "Calibrate now" (added 19 Nov by Jin): only while
+		   the car is stopped, never mid-run.  Subsystem 3 does it. */
+		if (g_b_running) {
+			tm_printf((UB *)"[car] calibrate ignored - stop the car first\n");
+			return false;		/* ack: rejected */
+		}
+		/* Already calibrating (at power-on, or a press before): a
+		   second request would start another round straight after,
+		   out of step with the dashboard's timer (car test 19 Nov). */
+		if (!s3_is_calibrated()) {
+			tm_printf((UB *)"[car] calibrate ignored - still calibrating\n");
+			return false;		/* ack: rejected */
+		}
+		s3_request_recalibrate();
 		return true;
 	case CMD_START:
 		if (!s3_is_calibrated()) {
@@ -84,6 +104,75 @@ LOCAL void update_imu(void)
 	}
 }
 
+/* Subsystem 2 odometry -> telemetry (added 19 Nov by Jin).  Nothing
+   called telem_set_motion(), so the dashboard showed distance, speed and
+   encoders as 0 while the car drove (Wi-Fi test 19 Nov, ramp run).
+   Speeds and counts come from s2_odom_get() (motor_task, ~20 ms);
+   distance is the car centre's distance since START, so the hump event
+   and the run summary say how far into the run things happened. */
+LOCAL W odom_centre_mm(s2_odom_t const *p)
+{
+	return (p->dist_mm_l + p->dist_mm_r) / 2;
+}
+
+LOCAL void update_motion(void)
+{
+	s2_odom_t	o;
+	W		d_mm;
+
+	s2_odom_get(&o);
+	if (o.updates == 0U) {
+		return;			/* motor task not started yet */
+	}
+	d_mm = odom_centre_mm(&o) - g_dist_base_mm;
+	if (d_mm < 0) {
+		d_mm = 0;		/* backed up past the start (bypass) */
+	}
+	telem_set_motion((float)o.speed_mms_l / 10.0f, (float)o.speed_mms_r / 10.0f,
+			 (int32_t)o.count_l, (int32_t)o.count_r, (float)d_mm / 10.0f);
+}
+
+/* Called for every state change, before telem_set_state() sees it. */
+LOCAL void on_state(robot_state_t st)
+{
+	BOOL const	b_run = (st != ROBOT_IDLE) && (st != ROBOT_STOPPED) &&
+				(st != ROBOT_ERROR);
+
+	if (b_run && !g_b_running) {
+		s2_odom_t	o;
+
+		/* A new run: distance counts from here.  Also re-read the
+		   fault table now: START has just cleared it, and the run
+		   summary takes its "faults seen" from the live faults at
+		   this moment (it showed a lift from BEFORE Start, 19 Nov). */
+		s2_odom_get(&o);
+		g_dist_base_mm = odom_centre_mm(&o);
+		update_faults();
+		update_motion();
+	}
+	g_b_running = b_run;
+}
+
+/* S5 scan result -> event/obstacle (added 19 Nov by Jin; see
+   s1_post_obstacle()).  obs_plan_t and avoid_action_t use the same order:
+   STOP, CONTINUE, LEFT, RIGHT, REVERSE.  S5 sends no angle: 90 (ahead). */
+LOCAL void update_obstacle(void)
+{
+	s1_obst_t		m;
+	obstacle_profile_t	p;
+
+	while (tk_rcv_mbf(mbf_s1_obst, &m, TMO_POL) == (INT)sizeof(m)) {
+		p.distance_cm    = (float)m.closest_cm;	/* 255 = out of range */
+		p.angle_deg      = 90.0f;
+		p.width_cm       = (m.width_cm == 255U) ? 0.0f : (float)m.width_cm;
+		p.clear_left_cm  = (float)m.left_cm;
+		p.clear_right_cm = (float)m.right_cm;
+		p.action         = (m.plan <= (UB)AVOID_REVERSE) ? (avoid_action_t)m.plan
+								  : AVOID_STOP;
+		telem_event_obstacle(&p);
+	}
+}
+
 LOCAL INT sign7(UH v)
 {
 	return ((v & 0x40U) != 0U) ? (INT)v - 128 : (INT)v;
@@ -100,6 +189,7 @@ LOCAL void apply_status(UH m)
 	}
 	switch (type) {
 	case S1_STATUS_STATE:
+		on_state((robot_state_t)((m >> 2) & 0x0FU));	/* Jin, 19 Nov */
 		telem_set_state((robot_state_t)((m >> 2) & 0x0FU));
 		break;
 	case S1_STATUS_LINE:
@@ -139,6 +229,8 @@ EXPORT void telemetry_task(INT stacd, void *exinf)
 		}
 		update_faults();
 		update_imu();
+		update_motion();		/* Jin, 19 Nov */
+		update_obstacle();		/* Jin, 19 Nov */
 		comms_poll();
 		telem_poll();
 		(void)tk_set_flg(flg_hb, HB_TELEMETRY);
