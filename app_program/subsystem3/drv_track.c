@@ -178,6 +178,38 @@ EXPORT volatile UW	s3_bar_pushed = 0U;	/* edges put in the queue */
 EXPORT ER		s3_bar_irq_er = E_OK;	/* GPIO interrupt set-up result */
 EXPORT ER		s3_bar_samp_er = E_OK;	/* sampler set-up result */
 
+/*
+ * 20 Nov (Aurelius, home loop test): DISTANCE clock for the barcode.
+ * The car log of 20 Nov 02:50 shows complete 30-edge barcodes that still
+ * read INVALID with widths like 10 60 8 22 68 100 56 20 10 ms: the right
+ * bars in the right order, stretched and squeezed. Line following weaves
+ * (+-50..60 deg/s) and the barcode sensor sits out on the left arm, so its
+ * speed over the bars swings between about 2 and 18 cm/s inside one
+ * barcode. The decoder compares widths in TIME, which needs a steady
+ * speed. PC model (testing/subsystem3/pc/barsim_weave.c): time clock reads
+ * 12 of 156 at a +-40 % swing and 0 at +-60 %; distance clock 156 of 156
+ * up to +-80 % when the encoders see at least 75 % of the swing.
+ *
+ * S3_BAR_DIST_CLOCK 1: edges are stamped with how far the SENSOR has
+ * travelled instead of the time, from the wheel encoders, in units where
+ * 10 = 1 um (so 1,000,000 = 100 mm, about what 1 s is at 10 cm/s, and the
+ * decoder's limits keep their meaning: 2 ms chatter rule = 0.2 mm).
+ * Sensor travel = left wheel + (left - right) x (arm - half track)/track:
+ * the sensor is S3_BAR_ARM_MM left of the car's centre line, further out
+ * than the left wheel. Travel is counted in both directions (absolute),
+ * so the clock never runs backwards. While the car stands still the clock
+ * stands still: a half-read barcode simply waits.
+ */
+#ifndef S3_BAR_DIST_CLOCK
+#define S3_BAR_DIST_CLOCK	0	/* 0 = time, as v19 */
+#endif
+#ifndef S3_BAR_ARM_MM
+#define S3_BAR_ARM_MM		85	/* MEASURE: barcode sensor to the car's centre line */
+#endif
+#define S3_BAR_HALF_TRACK_MM	55	/* AV_TRACK_MM 110 / 2 */
+#define S3_BAR_ARM_K256		(((S3_BAR_ARM_MM - S3_BAR_HALF_TRACK_MM) * 256) / (2 * S3_BAR_HALF_TRACK_MM))
+LOCAL volatile UW	s_bar_clock = 0U;	/* sensor travel, 10 units per um (wraps) */
+
 LOCAL volatile UW	s_q_level;	/* GP7 level after the last pushed edge */
 LOCAL volatile UW	s_samp_level;	/* GP7 level at the last sample */
 LOCAL volatile UW	s_raw_level;	/* GP7 level of the previous raw sample */
@@ -249,6 +281,35 @@ LOCAL void timer3_inthdr(UINT intno)
 	out_w(S3_TIMER_INTR, S3_ALARM3_BIT);		/* write 1 to clear */
 	out_w(S3_TIMER_ALARM3, now + S3_SAMPLE_US);	/* re-arm */
 
+#if S3_BAR_DIST_CLOCK
+	{	/* advance the distance clock (same core and priority as the
+		   encoder interrupt, so the counts cannot change under us) */
+		static W	prev_l = 0, prev_r = 0;
+		static BOOL	have_prev = FALSE;
+		static UW	rem = 0U;
+		W		cl, cr, dl, dr, ds;
+
+		drv_encoder_read(&cl, &cr);
+		if (!have_prev) {
+			prev_l = cl; prev_r = cr; have_prev = TRUE;
+		}
+		dl = cl - prev_l; dr = cr - prev_r;
+		prev_l = cl; prev_r = cr;
+#if ENC_RIGHT_ENABLED
+		ds = (dl * 256) + ((dl - dr) * (W)S3_BAR_ARM_K256);
+#else
+		(void)dr;
+		ds = dl * 256;
+#endif
+		if (ds < 0) {
+			ds = -ds;
+		}
+		rem += (UW)ds * 820U;		/* counts x 82 um x 10, Q8 */
+		s_bar_clock += rem >> 8;
+		rem &= 0xFFU;
+	}
+#endif
+
 	/* Debounce: a new level counts only after S3_SAMPLE_STABLE samples in
 	   a row; its timestamp is the FIRST of them, so widths stay exact to
 	   one sample.  Comparator bounce (us) and flicker < 0.5 ms vanish. */
@@ -285,8 +346,12 @@ LOCAL void timer3_inthdr(UINT intno)
 				   samples; half of that is the best estimate inside
 				   chatter. Same offset on every edge, so widths are
 				   unchanged. */
+#if S3_BAR_DIST_CLOCK
+				push_if_changed(s_samp_level, s_bar_clock);
+#else
 				push_if_changed(s_samp_level,
 						now - ((S3_SAMPLE_INTEG * S3_SAMPLE_US) / 2U));
+#endif
 			}
 		}
 		return;
@@ -394,6 +459,18 @@ EXPORT void drv_track_barcode_use_sampler(void)
 	s_raw_level = s_q_level;
 	s3_bar_src  = S3_BAR_SRC_SAMPLER;
 	EI(imask);
+}
+
+/* The clock the barcode edges are stamped with: time (us), or sensor
+   travel when S3_BAR_DIST_CLOCK is 1. The barcode task passes this, not
+   the time, to the decoder's "time passed" check. */
+EXPORT UW drv_track_bar_clock(void)
+{
+#if S3_BAR_DIST_CLOCK
+	return s_bar_clock;
+#else
+	return in_w(S3_TIMERAWL);
+#endif
 }
 
 EXPORT UW drv_track_barcode_level(void)

@@ -31,6 +31,7 @@ IMPORT UH	drv_track_read_right(void);
 IMPORT ER	drv_track_barcode_irq_init(void);
 IMPORT void	drv_track_barcode_use_sampler(void);
 IMPORT UW	drv_track_barcode_level(void);
+IMPORT UW	drv_track_bar_clock(void);	/* time, or sensor travel (20 Nov) */
 
 /* Edge-source diagnostics (written by the ISRs, read anywhere). */
 #define S3_BAR_SRC_IRQ		(0U)

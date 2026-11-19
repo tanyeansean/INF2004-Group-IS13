@@ -19,6 +19,14 @@
 
 #define S3_BARCODE_POLL_MS	5	/* well under the 20 ms the decoder needs */
 
+/* 1 = also publish each decoder result over MQTT (home test builds only). */
+#ifndef S3_BAR_DIAG_MQTT
+#define S3_BAR_DIAG_MQTT	0
+#endif
+#if S3_BAR_DIAG_MQTT
+#include "../subsystem1/comms.h"
+#endif
+
 LOCAL UW	s3_barcode_dropped = 0U;	/* barcode_q full */
 
 /* ---- Per-pass summary ---------------------------------------------------
@@ -89,6 +97,30 @@ LOCAL void on_result(const barcode_asm_t *p_asm, barcode_t res, UB *p_seen_dropp
 	}
 	s3_pass_last_res = res;
 	s3_pass_have_res = TRUE;
+
+#if S3_BAR_DIAG_MQTT
+	/* HOME TEST ONLY (20 Nov): send what the decoder saw to the laptop as
+	   <root>/dbg/bar, so the dashboard's CSV log has it without a USB
+	   console. [0] letter or '?', [1] edges in the window, [2] edges
+	   accepted in the burst, [3] chatter pairs cancelled, [4] edges queued
+	   in this pass so far, [5..] element widths, 2 ms per count (255 = 510+). */
+	{
+		UB	d[5 + BARCODE_FRAME_ELEMENTS];
+		UB	i;
+
+		d[0] = barcode_is_valid(res) ? (UB)barcode_get_char(res) : (UB)'?';
+		d[1] = info.n_edges;
+		d[2] = (info.burst_edges > 255U) ? 255U : (UB)info.burst_edges;
+		d[3] = (info.chatter_pairs > 255U) ? 255U : (UB)info.chatter_pairs;
+		d[4] = (s3_pass_queued > 255U) ? 255U : (UB)s3_pass_queued;
+		for (i = 0U; i < info.n_widths; i++) {
+			UW w = info.widths_us[i] / 2000U;
+
+			d[5U + i] = (w > 255U) ? 255U : (UB)w;
+		}
+		(void)comms_publish("dbg/bar", d, (uint16_t)(5U + info.n_widths), 0U, false);
+	}
+#endif
 }
 
 /* One line per pass: what the sensor did, what reached the decoder, and
@@ -184,7 +216,9 @@ EXPORT void barcode_task(INT stacd, void *exinf)
 			}
 		}
 		/* accepts a pending edge after 2 ms, or abandons a quiet frame */
-		if (barcode_asm_time_passed(&basm, now_us, &res)) {
+		/* 20 Nov: the edges' own clock (time, or distance), read AFTER
+		   the queue was emptied so it is never older than an edge. */
+		if (barcode_asm_time_passed(&basm, drv_track_bar_clock(), &res)) {
 			on_result(&basm, res, &seen_dropped);
 		}
 
