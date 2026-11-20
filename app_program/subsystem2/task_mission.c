@@ -83,7 +83,7 @@
 #define JN_MOVE_CAP_MS		8000U	/* backstop for one move */
 #define JN_HOLD_COUNTS_PER_PWM	12	/* straight moves: wheel-difference correction */
 #define JN_HOLD_MAX_PWM		15
-#define JN_RESCAN_MAX		3U	/* rescans per junction */
+#define JN_RESCAN_MAX		1U	/* rescans per junction. 20 Nov (Aurelius): 3 -> 1. Lab barcodes are up to 282 mm, so one rescan is ~45-60 cm back and ~15 s; three cost ~45 s for a barcode that will not read. One rescan still gives three looks: first pass, backwards while reversing, forwards again. */
 #define JN_RESCAN_MARGIN_MM	60	/* run-up: reverse this far past the first bar */
 #define JN_RESCAN_DEFAULT_MM	250	/* reverse when the barcode position is unknown */
 #define JN_RESCAN_MAX_MM	600	/* never reverse further than this */
