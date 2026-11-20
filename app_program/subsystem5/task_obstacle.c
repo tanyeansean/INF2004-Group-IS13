@@ -489,6 +489,9 @@ LOCAL s5_state_t oa_move_failed(oa_move_result_t r)
 	}
 }
 
+#ifndef OA_FINE_PINGS
+#define OA_FINE_PINGS	(3U)	/* pings per angle in the fine sweep, odd */
+#endif
 /* Sweep start, start+step, ... up to end (inclusive) into s_ctx.scan. */
 LOCAL void oa_sweep(UB start_deg, UB step_deg, UB end_deg)
 {
@@ -503,13 +506,38 @@ LOCAL void oa_sweep(UB start_deg, UB step_deg, UB end_deg)
 	for (angle = start_deg;
 	     (angle <= end_deg) && (s_ctx.scan.count < OA_MAX_SCAN_POINTS);
 	     angle += step_deg) {
-		dist_cm = (UB)OA_DIST_OUT_OF_RANGE;
+		UB	v[OA_FINE_PINGS];
+		UB	k;
+		UB	j;
+		/* 20 Nov (Aurelius): the fine sweep takes OA_FINE_PINGS pings per
+		   angle and keeps the middle one. One ping per angle made the
+		   width jump between runs (lab, same box at 19 cm: 18, 14, 11
+		   and once 0 cm): at the box's corners the echo comes and goes,
+		   so each edge moved by a 5 deg step from scan to scan, and one
+		   missed ping inside the box split it in two. PC model
+		   (obst2.c, real obstacle_profile.c): spread of a 15 cm box
+		   5.5 cm with 1 ping, 2.7 cm with 3. The coarse sweep only
+		   finds where to look, so it keeps 1 ping. */
+		UB const n = (step_deg == (UB)OA_FINE_STEP_DEG) ? (UB)OA_FINE_PINGS : 1U;
+
 		oa_servo_move((UB)angle);
-		if (oa_ping(&dist_cm) == HCSR04_TOO_SHORT) {
-			/* Noise: one more try, so a bad ping does not leave a
-			   false "open" (255) point in the profile. */
-			(void)oa_ping(&dist_cm);
+		for (k = 0U; k < n; k++) {
+			dist_cm = (UB)OA_DIST_OUT_OF_RANGE;
+			if (oa_ping(&dist_cm) == HCSR04_TOO_SHORT) {
+				/* Noise: one more try, so a bad ping does not leave a
+				   false "open" (255) point in the profile. */
+				dist_cm = (UB)OA_DIST_OUT_OF_RANGE;
+				(void)oa_ping(&dist_cm);
+			}
+			/* insert in order, smallest first */
+			j = k;
+			while ((j > 0U) && (v[j - 1U] > dist_cm)) {
+				v[j] = v[j - 1U];
+				j--;
+			}
+			v[j] = dist_cm;
 		}
+		dist_cm = v[n / 2U];
 
 		s_ctx.scan.dist_cm[s_ctx.scan.count] = dist_cm;
 		s_ctx.scan.count++;

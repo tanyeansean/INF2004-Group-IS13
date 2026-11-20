@@ -282,9 +282,115 @@ void barcode_asm_init(barcode_asm_t *a)
     a->have_pending       = 0u;
     a->last_count         = 0u;
     a->last_outcome       = (uint8_t)BARCODE_OUT_NONE;
+    a->last_repair        = BARCODE_REPAIR_NONE;
 }
 
 /* Freeze the debug counters for the result just produced, clear window. */
+/* ------------------------------------------------------------------ */
+/* Repairs (20 Nov, Aurelius, from the lab log of that day)            */
+/* ------------------------------------------------------------------ */
+/*
+ * Both repairs only ever hand a full 29-element frame to
+ * barcode_decode_frame(), so every normal check still applies to it: both
+ * '*', a letter, clean bar and space splits, both gap guards.
+ *
+ * 1. Speck. A scuff or dirt mark inside a white space (or a pinhole in a
+ *    bar) adds 2 edges: 32 instead of 30, and no 30-edge window decodes.
+ *    Lab, barcode Z, 12:11 and 12:27: "... 27 34 [3 2] 30 ..." where the
+ *    clean passes read "... 28 37 28 ...". With all 32 edges in view, each
+ *    inner element that is no more than 0.4 x the narrowest element left
+ *    after removing it is merged into its two neighbours and the 29
+ *    widths decoded. Accepted only if every candidate that decodes gives
+ *    the same letter.
+ *
+ * 2. Cut-off end mark. If the paper has no white margin after the last
+ *    bar (bars to the paper edge, then mat or a printed line), the last
+ *    bar never ends and the pass goes quiet 1 to 3 elements short. Lab,
+ *    barcode A, 10:06, 10:13, 10:31. The first and last character are the
+ *    same '*' read the same way round, so the missing elements of one are
+ *    copied from the other and the frame decoded. At least 6 of that
+ *    mark's 9 elements are still measured, including one wide space or
+ *    two wide bars, and must fit. Tried for a short tail and a short
+ *    head; accepted only if the results agree.
+ */
+#if BARCODE_REPAIR_SPECK
+static barcode_t repair_speck(const uint32_t e[BARCODE_WIN_EDGES])
+{
+    uint32_t w[BARCODE_WIN_EDGES - 1u];
+    uint32_t m[BARCODE_FRAME_ELEMENTS];
+    barcode_t found = barcode_invalid();
+    uint32_t i, j, k, least;
+
+    for (i = 0u; i + 1u < BARCODE_WIN_EDGES; i++) {
+        w[i] = e[i + 1u] - e[i];
+    }
+    for (i = 1u; i + 2u < BARCODE_WIN_EDGES; i++) {   /* inner elements 1..29 */
+        barcode_t r;
+
+        k = 0u;
+        least = 0xFFFFFFFFu;
+        for (j = 0u; j + 1u < BARCODE_WIN_EDGES; j++) {
+            if (j == i - 1u) {
+                m[k] = w[i - 1u] + w[i] + w[i + 1u];
+                j = i + 1u;
+            } else {
+                m[k] = w[j];
+            }
+            if (m[k] < least) {
+                least = m[k];
+            }
+            k++;
+        }
+        if (((uint64_t)w[i] * 5u) > ((uint64_t)least * 2u)) {
+            continue;   /* not small enough to be a speck */
+        }
+        r = barcode_decode_frame(m);
+        if (!barcode_is_valid(r)) {
+            continue;
+        }
+        if (barcode_is_valid(found) && (found.packed != r.packed)) {
+            return barcode_invalid();   /* two readings: do not guess */
+        }
+        found = r;
+    }
+    return found;
+}
+#endif
+
+#if BARCODE_REPAIR_TRUNC
+static barcode_t repair_truncated(const uint32_t *e, uint32_t n_edges)
+{
+    uint32_t f[BARCODE_FRAME_ELEMENTS];
+    uint32_t const n = n_edges - 1u;                    /* measured widths */
+    uint32_t const missing = BARCODE_FRAME_ELEMENTS - n;
+    barcode_t tail, head;
+    uint32_t i;
+
+    /* short tail: measured widths are elements 0..n-1 */
+    for (i = 0u; i < n; i++) {
+        f[i] = e[i + 1u] - e[i];
+    }
+    for (i = n; i < BARCODE_FRAME_ELEMENTS; i++) {
+        f[i] = f[i - 20u];              /* same element of the first '*' */
+    }
+    tail = barcode_decode_frame(f);
+
+    /* short head: measured widths are elements missing..28 */
+    for (i = 0u; i < n; i++) {
+        f[missing + i] = e[i + 1u] - e[i];
+    }
+    for (i = 0u; i < missing; i++) {
+        f[i] = f[i + 20u];              /* same element of the last '*' */
+    }
+    head = barcode_decode_frame(f);
+
+    if (barcode_is_valid(tail) && barcode_is_valid(head)) {
+        return (tail.packed == head.packed) ? tail : barcode_invalid();
+    }
+    return barcode_is_valid(tail) ? tail : head;
+}
+#endif
+
 static void asm_finish(barcode_asm_t *a, barcode_outcome_t outcome)
 {
     a->last_count         = a->count;
@@ -304,9 +410,10 @@ static uint8_t asm_accept(barcode_asm_t *a, uint32_t t_us, barcode_t *out)
     barcode_t r;
     uint32_t i;
 
-    if (a->count == BARCODE_FRAME_EDGES) {
+    a->last_repair = BARCODE_REPAIR_NONE;
+    if (a->count == BARCODE_WIN_EDGES) {
         /* window full: the oldest edge slides out (stray before a barcode) */
-        for (i = 0u; i + 1u < BARCODE_FRAME_EDGES; i++) {
+        for (i = 0u; i + 1u < BARCODE_WIN_EDGES; i++) {
             a->edges[i] = a->edges[i + 1u];
         }
         a->count--;
@@ -320,11 +427,20 @@ static uint8_t asm_accept(barcode_asm_t *a, uint32_t t_us, barcode_t *out)
         return 0u;
     }
 
+    /* the newest 30 edges, as before the window grew to 32 */
     for (i = 0u; i < BARCODE_FRAME_EDGES; i++) {
-        edges[i].t_us = a->edges[i];
+        edges[i].t_us = a->edges[(a->count - BARCODE_FRAME_EDGES) + i];
     }
     (void)barcode_edges_to_widths(edges, BARCODE_FRAME_EDGES, widths);
     r = barcode_decode_frame(widths);
+#if BARCODE_REPAIR_SPECK
+    if (!barcode_is_valid(r) && (a->count == BARCODE_WIN_EDGES)) {
+        r = repair_speck(a->edges);
+        if (barcode_is_valid(r)) {
+            a->last_repair = BARCODE_REPAIR_SPECK_USED;
+        }
+    }
+#endif
     if (!barcode_is_valid(r)) {
         return 0u; /* not reported: the next edge may complete a good window */
     }
@@ -392,6 +508,20 @@ uint8_t barcode_asm_time_passed(barcode_asm_t *a, uint32_t now_us, barcode_t *ou
     if ((now_us - a->last_edge_us) <= barcode_asm_abort_timeout_us(a)) {
         return 0u;
     }
+#if BARCODE_REPAIR_TRUNC
+    if ((a->count < BARCODE_FRAME_EDGES) &&
+        ((a->count + BARCODE_TRUNC_MAX_MISSING) >= BARCODE_FRAME_EDGES) &&
+        (a->burst_edges == a->count)) {
+        barcode_t const r = repair_truncated(a->edges, a->count);
+
+        if (barcode_is_valid(r)) {
+            a->last_repair = BARCODE_REPAIR_TRUNC_USED;
+            asm_finish(a, BARCODE_OUT_VALID);
+            *out = r;
+            return 1u;
+        }
+    }
+#endif
     asm_finish(a, (a->burst_edges >= BARCODE_FRAME_EDGES) ?
                   BARCODE_OUT_UNDECODABLE : BARCODE_OUT_PARTIAL);
     *out = barcode_invalid(); /* abandoned, reported once */
@@ -402,14 +532,18 @@ void barcode_asm_last_frame(const barcode_asm_t *a, barcode_frame_info_t *p_info
 {
     uint32_t i;
 
-    p_info->n_edges       = a->last_count;
-    p_info->n_widths      = (a->last_count > 1u) ? (uint8_t)(a->last_count - 1u) : 0u;
+    /* the newest 30 edges of the window (it can hold 32) */
+    uint32_t const skip = (a->last_count > BARCODE_FRAME_EDGES) ?
+                          ((uint32_t)a->last_count - BARCODE_FRAME_EDGES) : 0u;
+
+    p_info->n_edges       = (uint8_t)(a->last_count - skip);
+    p_info->n_widths      = (p_info->n_edges > 1u) ? (uint8_t)(p_info->n_edges - 1u) : 0u;
     p_info->outcome       = a->last_outcome;
     p_info->burst_edges   = a->last_burst_edges;
     p_info->chatter_pairs = a->last_chatter_pairs;
     p_info->longest_us    = 0u;
     for (i = 0u; i < p_info->n_widths; i++) {
-        p_info->widths_us[i] = a->edges[i + 1u] - a->edges[i];
+        p_info->widths_us[i] = a->edges[skip + i + 1u] - a->edges[skip + i];
         if (p_info->widths_us[i] > p_info->longest_us) {
             p_info->longest_us = p_info->widths_us[i];
         }

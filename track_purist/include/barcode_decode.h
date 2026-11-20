@@ -42,6 +42,20 @@ extern "C" {
 /* ---- Edge queue sizing (G3) ---- */
 #define BARCODE_EDGE_QUEUE_LEN   32u  /* a full frame is 30 edges */
 #define BARCODE_FRAME_EDGES      30u  /* edges in one full barcode (15 bars x 2) */
+/* 20 Nov (Aurelius): the window keeps 2 more edges than a frame, so a frame
+   with one stray dark speck in it (2 extra edges) is still all in view. */
+#define BARCODE_WIN_EDGES        32u
+/* Repairs, see barcode_decode.c. 0 switches one off. */
+#ifndef BARCODE_REPAIR_SPECK
+#define BARCODE_REPAIR_SPECK     1
+#endif
+#ifndef BARCODE_REPAIR_TRUNC
+#define BARCODE_REPAIR_TRUNC     1
+#endif
+#define BARCODE_TRUNC_MAX_MISSING 3u  /* elements a cut-off end mark may lack */
+#define BARCODE_REPAIR_NONE      0u
+#define BARCODE_REPAIR_SPECK_USED 1u
+#define BARCODE_REPAIR_TRUNC_USED 2u
 #define BARCODE_FRAME_ELEMENTS   29u  /* element widths per frame (edges - 1)    */
 #define BARCODE_CHAR_ELEMENTS     9u  /* Code 39: 9 elements per char */
 #define BARCODE_WIDE_PER_CHAR     3u  /* Code 39: 3 wide elements per char */
@@ -161,17 +175,18 @@ uint32_t barcode_edges_to_widths(const barcode_edge_t *edges, uint32_t n_edges,
  * it should force INVALID. The assembler itself never touches the queue.
  */
 typedef struct {
-    uint32_t edges[BARCODE_FRAME_EDGES]; /* accepted edges, oldest first   */
+    uint32_t edges[BARCODE_WIN_EDGES];   /* accepted edges, oldest first   */
     uint32_t pending_us;      /* newest edge, waiting for the chatter check */
     uint32_t last_edge_us;    /* time of the newest raw edge (abort timer)  */
     uint16_t burst_edges;     /* accepted edges since the last result       */
     uint16_t chatter_pairs;   /* pulse pairs cancelled since the last result */
     uint16_t last_burst_edges;   /* the same two, frozen at the last result */
     uint16_t last_chatter_pairs;
-    uint8_t  count;           /* accepted edges in the window, 0..30        */
+    uint8_t  count;           /* accepted edges in the window, 0..32        */
     uint8_t  have_pending;    /* 1 = pending_us holds an edge               */
     uint8_t  last_count;      /* edges in the window at the last result     */
     uint8_t  last_outcome;    /* barcode_outcome_t of the last result       */
+    uint8_t  last_repair;     /* BARCODE_REPAIR_* used for the last result  */
 } barcode_asm_t;
 
 /** Initialise (or reset) the assembler: empty window, nothing pending. */

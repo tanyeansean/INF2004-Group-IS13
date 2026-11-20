@@ -545,14 +545,15 @@ int main(void)
         CHECK_EQ_INT(inv, 0, "partial frame -> no INVALID yet");
 
         /* first 12 edges hold a wide element of 9 x 5 ms = 45 ms, so the
-           adaptive timeout is 6 x 45 = 270 ms (above the 150 ms floor) */
-        CHECK_EQ_INT(barcode_asm_abort_timeout_us(&a), 270000, "abort timeout = 6 x longest (45 ms)");
+           adaptive timeout would be 6 x 45 = 270 ms, below the floor, which
+           is 600 ms since 20 Nov (150 ms cut every slow forward pass). */
+        CHECK_EQ_INT(barcode_asm_abort_timeout_us(&a), 600000, "abort timeout = the 600 ms floor (6 x 45 ms is less)");
         fired = barcode_asm_time_passed(&a, ed[11] + 200000u, &out); /* 200 ms */
-        CHECK(!fired, "200 ms silence < 270 ms: no abandon");
+        CHECK(!fired, "200 ms silence < 600 ms: no abandon");
 
         /* enough silence => exactly one INVALID */
-        fired = barcode_asm_time_passed(&a, ed[11] + 300000u, &out); /* 300 ms */
-        CHECK(fired, "300 ms silence > 270 ms: abandon fires");
+        fired = barcode_asm_time_passed(&a, ed[11] + 650000u, &out); /* 650 ms */
+        CHECK(fired, "650 ms silence > 600 ms: abandon fires");
         CHECK(!barcode_is_valid(out), "abandoned partial -> INVALID");
 
         /* a further time_passed must NOT fire again (reported once) */
@@ -982,8 +983,10 @@ int main(void)
         printf("  info: F2 %d damaged scans + strays: %d right (damage in edges 26..29), %d wrong\n",
                total[1], right[1], wrong[1]);
         CHECK_EQ_INT(wrong[0] + wrong[1], 0, "F: damaged frames never give a wrong letter");
-        CHECK_EQ_INT(right[0], 0, "F1: damaged frames on their own are all INVALID");
-        CHECK_EQ_INT(right_not_at_end, 0, "F2: right letter only when a stray replaces the last edges");
+        /* 20 Nov: a frame cut 1 to 3 elements short at either end is now
+           read (cut-off end mark repair), always as the right letter. */
+        CHECK(right[0] > 0, "F1: frames cut short at an end are read by the repair");
+        (void)right_not_at_end;
     }
 
     /* G) slow start: first elements narrow, then the hand slows down */
@@ -1078,6 +1081,55 @@ int main(void)
         CHECK(ok_rev,    "I: same, scanned backwards");
         CHECK(ok_shrink, "I: every letter reads with bars shrunk by 0.8 x narrow");
         CHECK(no_guess,  "I: wide bars at 1.2 x narrow stay INVALID");
+    }
+
+    /* J) Repairs, on passes recorded on the lab track on 20 Nov (widths in
+          0.2 mm of sensor travel; fed here as 2000 us each). */
+    {
+        /* Z with a dark speck in a white space: 32 edges (12:27:25, its two
+           leading widths taken from the clean pass at 12:29:52) */
+        static const uint32_t z_speck[31] = { 23,94,22,36,80,35,85,35,24,37,22,97,89,36,89,38,27,34,
+                                              3,2,30,40,23,100,18,34,82,36,81,33,27 };
+        /* A with no white after the last bar: 27 edges (10:06:09) */
+        static const uint32_t a_cut[26] = { 29,68,27,18,81,19,84,22,32,19,88,21,34,23,32,73,33,17,
+                                            87,22,30,76,29,23,84,20 };
+        /* A, 28 edges, the last bar ran on (10:31:50) */
+        static const uint32_t a_long[27] = { 23,80,35,21,77,22,77,23,27,24,82,22,30,22,27,73,30,23,
+                                             88,26,31,78,29,26,88,17,255 };
+        uint32_t ed[40]; uint32_t i, n; int v, inv; uint8_t cmd; barcode_asm_t a; barcode_t out;
+
+#define LAB_RUN(arr, cnt) do { n = (cnt); ed[0] = 1000000u; \
+            for (i = 0; i < n; i++) { ed[i + 1u] = ed[i] + (arr)[i] * 2000u; } \
+            barcode_asm_init(&a); v = 0; inv = 0; cmd = 0xFFu; \
+            run_edges(&a, ed, n + 1u, &v, &inv, &cmd); \
+            if ((v == 0) && barcode_asm_time_passed(&a, ed[n] + 2500000u, &out)) { \
+                if (barcode_is_valid(out)) { v = 1; cmd = barcode_get_letter(out); } } } while (0)
+
+        LAB_RUN(z_speck, 31u);
+        CHECK((v == 1) && (cmd == (uint8_t)('Z' - 'A')), "J: Z with a speck (32 edges) reads Z");
+        CHECK_EQ_INT(a.last_repair, BARCODE_REPAIR_SPECK_USED, "J: ... by the speck repair");
+        LAB_RUN(a_cut, 26u);
+        CHECK((v == 1) && (cmd == (uint8_t)('A' - 'A')), "J: A cut 3 elements short reads A");
+        CHECK_EQ_INT(a.last_repair, BARCODE_REPAIR_TRUNC_USED, "J: ... by the cut-off end mark repair");
+        LAB_RUN(a_long, 27u);
+        CHECK((v == 1) && (cmd == (uint8_t)('A' - 'A')), "J: A with the last bar run on reads A");
+        {   /* a "speck" as wide as a narrow bar is a real element: no repair */
+            uint32_t big[31];
+            for (i = 0; i < 31u; i++) { big[i] = z_speck[i]; }
+            big[18] = 20u; big[19] = 20u;
+            LAB_RUN(big, 31u);
+            CHECK_EQ_INT(v, 0, "J: two extra narrow-sized elements stay INVALID");
+        }
+        LAB_RUN(a_cut, 25u);    /* 4 elements short: too much to assume */
+        CHECK_EQ_INT(v, 0, "J: cut 4 elements short stays INVALID");
+        {   /* cut short, and the measured part of the end mark is not a '*' */
+            uint32_t bad[26];
+            for (i = 0; i < 26u; i++) { bad[i] = a_cut[i]; }
+            bad[21] = 25u;      /* the mark's wide space made narrow */
+            LAB_RUN(bad, 26u);
+            CHECK_EQ_INT(v, 0, "J: cut short with a wrong end mark stays INVALID");
+        }
+#undef LAB_RUN
     }
 
     return TEST_SUMMARY();

@@ -109,6 +109,9 @@ LOCAL void on_result(const barcode_asm_t *p_asm, barcode_t res, UB *p_seen_dropp
 		UB	i;
 
 		d[0] = barcode_is_valid(res) ? (UB)barcode_get_char(res) : (UB)'?';
+		if (barcode_is_valid(res) && (p_asm->last_repair != BARCODE_REPAIR_NONE)) {
+			d[0] = (UB)(d[0] + 32U);	/* lower case = read with a repair */
+		}
 		d[1] = info.n_edges;
 		d[2] = (info.burst_edges > 255U) ? 255U : (UB)info.burst_edges;
 		d[3] = (info.chatter_pairs > 255U) ? 255U : (UB)info.chatter_pairs;
