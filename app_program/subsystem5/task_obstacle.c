@@ -490,7 +490,7 @@ LOCAL s5_state_t oa_move_failed(oa_move_result_t r)
 }
 
 #ifndef OA_FINE_PINGS
-#define OA_FINE_PINGS	(3U)	/* pings per angle in the fine sweep, odd */
+#define OA_FINE_PINGS	(5U)	/* pings per angle in the fine sweep, odd */
 #endif
 /* Sweep start, start+step, ... up to end (inclusive) into s_ctx.scan. */
 LOCAL void oa_sweep(UB start_deg, UB step_deg, UB end_deg)
@@ -516,7 +516,8 @@ LOCAL void oa_sweep(UB start_deg, UB step_deg, UB end_deg)
 		   so each edge moved by a 5 deg step from scan to scan, and one
 		   missed ping inside the box split it in two. PC model
 		   (obst2.c, real obstacle_profile.c): spread of a 15 cm box
-		   5.5 cm with 1 ping, 2.7 cm with 3. The coarse sweep only
+		   5.5 cm with 1 ping, 2.7 cm with 3, about 1 cm with 5 (about
+		   3 s more per scan). The coarse sweep only
 		   finds where to look, so it keeps 1 ping. */
 		UB const n = (step_deg == (UB)OA_FINE_STEP_DEG) ? (UB)OA_FINE_PINGS : 1U;
 

@@ -53,6 +53,7 @@
 #define JUNCTION_STOPS		0	/* 0 = barcode move at a junction (below);
 					   1 = stop at every junction, no move */
 #endif
+#define SPEED_MIN_PWM		42	/* = "speed 10": lowest base PWM that drives steadily */
 #ifndef PWM_AT_SPEED_MAX
 #define PWM_AT_SPEED_MAX	85	/* PWM for "speed 20" (not yet measured) */
 #endif
@@ -83,7 +84,7 @@
 #define JN_MOVE_CAP_MS		8000U	/* backstop for one move */
 #define JN_HOLD_COUNTS_PER_PWM	12	/* straight moves: wheel-difference correction */
 #define JN_HOLD_MAX_PWM		15
-#define JN_RESCAN_MAX		1U	/* rescans per junction. 20 Nov (Aurelius): 3 -> 1. Lab barcodes are up to 282 mm, so one rescan is ~45-60 cm back and ~15 s; three cost ~45 s for a barcode that will not read. One rescan still gives three looks: first pass, backwards while reversing, forwards again. */
+#define JN_RESCAN_MAX		0U	/* rescans per junction. 20 Nov (Aurelius): 3 -> 1 -> 0: an unreadable barcode now goes straight on at the junction, no reverse (team decision in the lab: the reverse worked but cost 15 s and was not consistent). Set to 1 to bring one rescan back. */
 #define JN_RESCAN_MARGIN_MM	60	/* run-up: reverse this far past the first bar */
 #define JN_RESCAN_DEFAULT_MM	250	/* reverse when the barcode position is unknown */
 #define JN_RESCAN_MAX_MM	600	/* never reverse further than this */
@@ -1196,6 +1197,16 @@ LOCAL void on_command(comms_cmd_t cmd)
 		   to PWM, 20 -> PWM_AT_SPEED_MAX, keeping the M1:M2 ratio. */
 		if ((cmd.arg > 0U) && (cmd.arg <= 20U)) {
 			g_base_m1 = (H)(((INT)cmd.arg * PWM_AT_SPEED_MAX) / 20);
+			/* 20 Nov (Aurelius, lab log 12:03-12:11): below "speed 10"
+			   the car is not usable. Speed 4 (PWM 17) did not move
+			   (8 START presses), speed 8 (PWM 34) crawled at 3 cm/s in
+			   jerks and barcode Z failed. Speed 10 (PWM 42) is the
+			   lowest that drove and read every barcode. */
+			if (g_base_m1 < SPEED_MIN_PWM) {
+				g_base_m1 = SPEED_MIN_PWM;
+				tm_printf((UB *)"[car] speed %u is below the lowest that drives: using PWM %d\n",
+					  (UINT)cmd.arg, (INT)SPEED_MIN_PWM);
+			}
 			g_base_m2 = (H)(((INT)g_base_m1 * BASE_PWM_M2) / BASE_PWM_M1);
 			if (g_base_m2 > S2_PWM_MAX) {
 				g_base_m2 = S2_PWM_MAX;

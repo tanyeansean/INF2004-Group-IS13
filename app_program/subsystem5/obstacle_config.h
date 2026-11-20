@@ -127,6 +127,21 @@
 #ifndef OA_BEAM_HALF_DEG
 #define OA_BEAM_HALF_DEG	(14U)
 #endif
+/* 20 Nov (Aurelius): the REPORTED width uses its own beam value. The lab
+   obstacle is a flat box, 15 cm on its wide face and 10 cm on its narrow
+   one, and Jin measured ~20 deg for a flat box (above). With 14 the same
+   box at 19 cm read 18 cm on most scans of 20 Nov (dashboard log). A PC
+   model with a 20 deg beam and flickering corner echoes reproduces that
+   18 (obst3.c, on the real obstacle_profile.c); in it, 17 here with 5
+   pings per angle reads the 10 cm face as 9.2-11.0 cm and the 15 cm face
+   as 14.7-15.6 cm from 15 to 30 cm away (spread about 1 cm). TUNE on the
+   car: 1 deg more here = about 0.7 cm less width at 20 cm.
+   The sidestep keeps OA_BEAM_HALF_DEG (14, errs wide = the safe side), so
+   the car drives round the box exactly as before; only the number
+   reported changes. */
+#ifndef OA_BEAM_WIDTH_HALF_DEG
+#define OA_BEAM_WIDTH_HALF_DEG	(17U)
+#endif
 #define OA_BEAM_GROW_FROM_CM	(35U)
 #define OA_BEAM_GROW_PER_CM_X100 (85U)
 #define OA_BEAM_HALF_MAX_DEG	(45U)

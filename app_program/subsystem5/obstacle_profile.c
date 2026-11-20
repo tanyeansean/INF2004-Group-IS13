@@ -75,9 +75,9 @@ static int32_t offset_from_centre(oa_scan_t const *p_scan, uint8_t i)
 
 /* Half the ultrasonic beam at distance d_cm, in degrees (measured, see
    OA_BEAM_HALF_DEG in obstacle_config.h). */
-static int32_t beam_half_deg(int32_t d_cm)
+static int32_t beam_half_deg(int32_t d_cm, int32_t near_deg)
 {
-	int32_t beam = (int32_t)OA_BEAM_HALF_DEG;
+	int32_t beam = near_deg;
 
 	if (d_cm > (int32_t)OA_BEAM_GROW_FROM_CM) {
 		beam += ((d_cm - (int32_t)OA_BEAM_GROW_FROM_CM) * (int32_t)OA_BEAM_GROW_PER_CM_X100) / 100;
@@ -106,14 +106,15 @@ static int32_t d_tan_q8(int32_t d_cm, int32_t deg)
    the beam is wider than the obstacle can be told apart, both sit at the
    middle of what was seen. */
 static void corrected_edges_q8(oa_scan_t const *p_scan, uint8_t lo, uint8_t hi,
-			       uint8_t d_cm, int32_t *p_left_q8, int32_t *p_right_q8)
+			       uint8_t d_cm, int32_t near_deg,
+			       int32_t *p_left_q8, int32_t *p_right_q8)
 {
 	int32_t const	off_lo = offset_from_centre(p_scan, lo);
 	int32_t const	off_hi = offset_from_centre(p_scan, hi);
 	int32_t const	off_left  = (off_lo > off_hi) ? off_lo : off_hi;	/* furthest left hit  */
 	int32_t const	off_right = (off_lo > off_hi) ? off_hi : off_lo;	/* furthest right hit */
 	int32_t const	half_step = (int32_t)p_scan->step_deg / 2;
-	int32_t const	beam = beam_half_deg((int32_t)d_cm);
+	int32_t const	beam = beam_half_deg((int32_t)d_cm, near_deg);
 	/* Where the corners really are, from straight ahead (+ = left). */
 	int32_t		corner_left  = off_left + half_step - beam;
 	int32_t		corner_right = off_right - half_step + beam;
@@ -132,7 +133,8 @@ static int32_t corrected_width_q8(oa_scan_t const *p_scan, uint8_t lo, uint8_t h
 	int32_t	left_q8;
 	int32_t	right_q8;
 
-	corrected_edges_q8(p_scan, lo, hi, d_cm, &left_q8, &right_q8);
+	/* the reported width has its own beam value: see OA_BEAM_WIDTH_HALF_DEG */
+	corrected_edges_q8(p_scan, lo, hi, d_cm, (int32_t)OA_BEAM_WIDTH_HALF_DEG, &left_q8, &right_q8);
 	return (left_q8 > right_q8) ? (left_q8 - right_q8) : 0;
 }
 
@@ -346,7 +348,8 @@ void profile_build(oa_scan_t const *p_scan, oa_profile_t *p_prof)
 		int32_t		edge_l;
 		int32_t		edge_r;
 
-		corrected_edges_q8(p_scan, lo, hi, p_scan->dist_cm[closest], &edge_l, &edge_r);
+		corrected_edges_q8(p_scan, lo, hi, p_scan->dist_cm[closest],
+				   (int32_t)OA_BEAM_HALF_DEG, &edge_l, &edge_r);
 		p_prof->left_edge_cm  = q8_to_cm(edge_l);
 		p_prof->right_edge_cm = q8_to_cm(edge_r);
 	}
