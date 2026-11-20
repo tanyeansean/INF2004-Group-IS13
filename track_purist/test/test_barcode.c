@@ -1120,6 +1120,17 @@ int main(void)
             LAB_RUN(big, 31u);
             CHECK_EQ_INT(v, 0, "J: two extra narrow-sized elements stay INVALID");
         }
+        {   /* all 30 edges, but the last bar ran on into something dark:
+               A (10:06:09 widths) with a 120-unit last bar */
+            uint32_t ov[29];
+            for (i = 0; i < 26u; i++) { ov[i] = a_cut[i]; }
+            ov[26] = 67u; ov[27] = 22u; ov[28] = 120u;
+            LAB_RUN(ov, 29u);
+            CHECK((v == 1) && (cmd == (uint8_t)('A' - 'A')), "J: A whose last bar runs on (30 edges) reads A");
+            ov[28] = 30u; ov[13] = 140u;   /* longest element in the middle: no repair */
+            LAB_RUN(ov, 29u);
+            CHECK_EQ_INT(v, 0, "J: a long element in the middle stays INVALID");
+        }
         LAB_RUN(a_cut, 25u);    /* 4 elements short: too much to assume */
         CHECK_EQ_INT(v, 0, "J: cut 4 elements short stays INVALID");
         {   /* cut short, and the measured part of the end mark is not a '*' */

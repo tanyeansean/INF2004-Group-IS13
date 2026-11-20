@@ -389,6 +389,40 @@ static barcode_t repair_truncated(const uint32_t *e, uint32_t n_edges)
     }
     return barcode_is_valid(tail) ? tail : head;
 }
+
+/*
+ * 20 Nov (Aurelius, lab-track simulation of that day): the same
+ * no-white-margin fault, seen from the other side. If something dark lies
+ * right after the last bar (a printed line under the paper), the last bar
+ * does end, but far too late: all 30 edges arrive and the last element is
+ * the longest one in the frame. Both ends of a frame are narrow bars of '*'
+ * in either direction, so a longest element at an end can only be that
+ * fault: drop it and treat the frame as one element short (same repair,
+ * same checks). Lab 10:33:35 was this. Tried as soon as the 30th edge
+ * arrives (tail only), else the junction comes first; head too when the
+ * pass has ended.
+ */
+static barcode_t repair_overlong_end(const uint32_t e[BARCODE_FRAME_EDGES], uint8_t try_head)
+{
+    uint32_t const w_first = e[1] - e[0];
+    uint32_t const w_last  = e[BARCODE_FRAME_EDGES - 1u] - e[BARCODE_FRAME_EDGES - 2u];
+    uint32_t longest = 0u;
+    uint32_t i;
+    barcode_t r = barcode_invalid();
+
+    for (i = 0u; i + 1u < BARCODE_FRAME_EDGES; i++) {
+        if ((e[i + 1u] - e[i]) > longest) {
+            longest = e[i + 1u] - e[i];
+        }
+    }
+    if (w_last == longest) {
+        r = repair_truncated(e, BARCODE_FRAME_EDGES - 1u);
+    }
+    if (try_head && !barcode_is_valid(r) && (w_first == longest)) {
+        r = repair_truncated(&e[1], BARCODE_FRAME_EDGES - 1u);
+    }
+    return r;
+}
 #endif
 
 static void asm_finish(barcode_asm_t *a, barcode_outcome_t outcome)
@@ -438,6 +472,14 @@ static uint8_t asm_accept(barcode_asm_t *a, uint32_t t_us, barcode_t *out)
         r = repair_speck(a->edges);
         if (barcode_is_valid(r)) {
             a->last_repair = BARCODE_REPAIR_SPECK_USED;
+        }
+    }
+#endif
+#if BARCODE_REPAIR_TRUNC
+    if (!barcode_is_valid(r)) {
+        r = repair_overlong_end(&a->edges[a->count - BARCODE_FRAME_EDGES], 0u);
+        if (barcode_is_valid(r)) {
+            a->last_repair = BARCODE_REPAIR_TRUNC_USED;
         }
     }
 #endif
@@ -509,6 +551,16 @@ uint8_t barcode_asm_time_passed(barcode_asm_t *a, uint32_t now_us, barcode_t *ou
         return 0u;
     }
 #if BARCODE_REPAIR_TRUNC
+    if (a->count >= BARCODE_FRAME_EDGES) {
+        barcode_t const r = repair_overlong_end(&a->edges[a->count - BARCODE_FRAME_EDGES], 1u);
+
+        if (barcode_is_valid(r)) {
+            a->last_repair = BARCODE_REPAIR_TRUNC_USED;
+            asm_finish(a, BARCODE_OUT_VALID);
+            *out = r;
+            return 1u;
+        }
+    }
     if ((a->count < BARCODE_FRAME_EDGES) &&
         ((a->count + BARCODE_TRUNC_MAX_MISSING) >= BARCODE_FRAME_EDGES) &&
         (a->burst_edges == a->count)) {
