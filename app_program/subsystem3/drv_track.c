@@ -201,10 +201,10 @@ EXPORT ER		s3_bar_samp_er = E_OK;	/* sampler set-up result */
  * stands still: a half-read barcode simply waits.
  */
 #ifndef S3_BAR_DIST_CLOCK
-#define S3_BAR_DIST_CLOCK	0	/* 0 = time, as v19 */
+#define S3_BAR_DIST_CLOCK	1	/* 1 = wheel distance (20 Nov lab default); 0 = time, as v19 */
 #endif
 #ifndef S3_BAR_ARM_MM
-#define S3_BAR_ARM_MM		85	/* MEASURE: barcode sensor to the car's centre line */
+#define S3_BAR_ARM_MM		90	/* barcode sensor to the car's centre line (photo estimate; MEASURE) */
 #endif
 #define S3_BAR_HALF_TRACK_MM	55	/* AV_TRACK_MM 110 / 2 */
 #define S3_BAR_ARM_K256		(((S3_BAR_ARM_MM - S3_BAR_HALF_TRACK_MM) * 256) / (2 * S3_BAR_HALF_TRACK_MM))
