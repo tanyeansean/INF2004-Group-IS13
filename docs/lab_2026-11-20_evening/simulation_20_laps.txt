@@ -1,0 +1,120 @@
+RUN  1 lab track  screw thr 0.49 spot 3.0mm wheels 0.98 start -2mm/-1.4deg -> FAIL
+    F 6mm     -> LEFT     OK                           did LEFT     
+    A 4mm     -> U-TURN   UNREADABLE (went straight)   did FORWARD  speck 1.7mm, dark after end
+    Q 6mm     -> RIGHT    OK                           did RIGHT    
+    Z 6mm     -> FORWARD  OK                           did FORWARD  
+    box 15cm face at 21cm -> width 14, plan LEFT, sidestep 28  ok
+RUN  2 lab track  screw thr 0.43 spot 2.8mm wheels 0.96 start +3mm/+0.1deg -> FAIL
+    F 6mm     -> LEFT     OK                           did LEFT     
+    A 4mm     -> U-TURN   UNREADABLE (went straight)   did FORWARD  speck 1.9mm
+    Q 6mm     -> RIGHT    OK                           did RIGHT    
+    Z 6mm     -> FORWARD  OK                           did FORWARD  
+    box 15cm face at 21cm -> width 15, plan LEFT, sidestep 28  ok
+RUN  3 lab track  screw thr 0.43 spot 3.4mm wheels 1.03 start -4mm/-0.9deg -> PASS
+    F 6mm     -> LEFT     OK                           did LEFT     
+    A 4mm     -> U-TURN   OK                           did U-TURN   speck 1.2mm
+    Q 6mm     -> RIGHT    OK                           did RIGHT    
+    Z 6mm     -> FORWARD  OK                           did FORWARD  
+    box 15cm face at 20cm -> width 15, plan LEFT, sidestep 30  ok
+RUN  4 lab track  screw thr 0.51 spot 4.0mm wheels 0.99 start -0mm/-1.0deg -> PASS
+    F 6mm     -> LEFT     OK                           did LEFT     
+    A 4mm     -> U-TURN   OK                           did U-TURN   
+    Q 6mm     -> RIGHT    OK                           did RIGHT    speck 1.5mm
+    Z 6mm     -> FORWARD  OK                           did FORWARD  speck 2.0mm
+    box 15cm face at 21cm -> width 14, plan LEFT, sidestep 28  ok
+RUN  5 lab track  screw thr 0.42 spot 3.9mm wheels 0.99 start -2mm/-0.9deg -> PASS
+    F 6mm     -> LEFT     OK                           did LEFT     
+    A 4mm     -> U-TURN   OK                           did U-TURN   dark after end
+    Q 6mm     -> RIGHT    OK                           did RIGHT    
+    Z 6mm     -> FORWARD  OK                           did FORWARD  speck 1.3mm
+    box 10cm face at 21cm -> width 9, plan LEFT, sidestep 25  ok
+RUN  6 lab track  screw thr 0.48 spot 3.7mm wheels 1.00 start +1mm/+0.5deg -> PASS
+    F 6mm     -> LEFT     OK                           did LEFT     speck 2.4mm
+    A 4mm     -> U-TURN   OK                           did U-TURN   
+    Q 6mm     -> RIGHT    OK                           did RIGHT    
+    Z 6mm     -> FORWARD  OK                           did FORWARD  
+    box 10cm face at 21cm -> width 12, plan LEFT, sidestep 26  ok
+RUN  7 lab track  screw thr 0.52 spot 3.2mm wheels 1.00 start +1mm/+1.5deg -> PASS
+    F 6mm     -> LEFT     OK                           did LEFT     
+    A 4mm     -> U-TURN   OK                           did U-TURN   dark after end
+    Q 6mm     -> RIGHT    OK                           did RIGHT    
+    Z 6mm     -> FORWARD  OK                           did FORWARD  
+    box 15cm face at 22cm -> width 14, plan LEFT, sidestep 28  ok
+RUN  8 lab track  screw thr 0.46 spot 3.4mm wheels 1.03 start +1mm/+1.9deg -> PASS
+    F 6mm     -> LEFT     OK                           did LEFT     
+    A 4mm     -> U-TURN   OK                           did U-TURN   dark after end
+    Q 6mm     -> RIGHT    OK                           did RIGHT    speck 1.6mm
+    Z 6mm     -> FORWARD  OK                           did FORWARD  
+    box 15cm face at 21cm -> width 14, plan LEFT, sidestep 26  ok
+RUN  9 lab track  screw thr 0.48 spot 3.4mm wheels 1.04 start +2mm/-0.6deg -> PASS
+    F 6mm     -> LEFT     OK                           did LEFT     speck 1.3mm, dark after end
+    A 4mm     -> U-TURN   OK                           did U-TURN   
+    Q 6mm     -> RIGHT    OK                           did RIGHT    
+    Z 6mm     -> FORWARD  OK                           did FORWARD  
+    box 10cm face at 21cm -> width 8, plan RIGHT, sidestep 24  ok
+RUN 10 lab track  screw thr 0.53 spot 2.7mm wheels 1.04 start +1mm/+1.2deg -> PASS
+    F 6mm     -> LEFT     OK                           did LEFT     
+    A 4mm     -> U-TURN   OK                           did U-TURN   speck 1.2mm, dark after end
+    Q 6mm     -> RIGHT    OK                           did RIGHT    
+    Z 6mm     -> FORWARD  OK                           did FORWARD  
+    box 15cm face at 22cm -> width 14, plan LEFT, sidestep 28  ok
+RUN 11 new combos screw thr 0.55 spot 2.5mm wheels 1.02 start -3mm/+0.3deg -> PASS
+    G 4mm     -> FORWARD  OK                           did FORWARD  speck 1.2mm
+    J 5mm     -> RIGHT    OK                           did RIGHT    
+    L 4mm     -> U-TURN   OK                           did U-TURN   speck 1.9mm
+    H 5mm     -> LEFT     OK                           did LEFT     dark after end
+    box 15cm face at 32cm -> width 16, plan LEFT, sidestep 29  ok
+RUN 12 new combos screw thr 0.43 spot 2.5mm wheels 1.04 start -3mm/+0.6deg -> FAIL
+    G 4mm rev -> RIGHT    OK                           did RIGHT    
+    Z 4mm     -> FORWARD  OK                           did FORWARD  speck 1.1mm, dark after end
+    H 5mm     -> U-TURN   OK                           did U-TURN   
+    Q 5mm     -> LEFT     OK                           did LEFT     
+    box 10cm face at 28cm -> width 7, plan RIGHT, sidestep 25  OFF
+RUN 13 new combos screw thr 0.49 spot 2.3mm wheels 1.03 start +3mm/+1.0deg -> PASS
+    D 4mm rev -> FORWARD  OK                           did FORWARD  
+    H 5mm rev -> LEFT     OK                           did LEFT     
+    F 4mm rev -> RIGHT    OK                           did RIGHT    speck 1.6mm
+    Z 4mm     -> U-TURN   OK                           did U-TURN   
+    box 10cm face at 21cm -> width 10, plan LEFT, sidestep 28  ok
+RUN 14 new combos screw thr 0.47 spot 2.7mm wheels 0.99 start -1mm/+0.9deg -> PASS
+    C 6mm rev -> RIGHT    OK                           did RIGHT    
+    D 6mm     -> U-TURN   OK                           did U-TURN   dark after end
+    F 3mm rev -> FORWARD  OK                           did FORWARD  
+    U 5mm rev -> LEFT     OK                           did LEFT     speck 2.5mm
+    box 10cm face at 21cm -> width 10, plan RIGHT, sidestep 26  ok
+RUN 15 new combos screw thr 0.55 spot 2.9mm wheels 0.98 start -2mm/+1.8deg -> FAIL
+    G 3mm     -> RIGHT    UNREADABLE (went straight)   did FORWARD  speck 2.0mm
+    B 3mm     -> U-TURN   UNREADABLE (went straight)   did FORWARD  speck 2.0mm
+    J 5mm     -> LEFT     OK                           did LEFT     
+    M 4mm rev -> FORWARD  OK                           did FORWARD  dark after end
+    box 10cm face at 28cm -> width 11, plan LEFT, sidestep 28  ok
+RUN 16 new combos screw thr 0.57 spot 3.1mm wheels 1.00 start -3mm/+0.3deg -> PASS
+    N 5mm     -> FORWARD  OK                           did FORWARD  
+    L 5mm     -> LEFT     OK                           did LEFT     speck 2.1mm
+    W 6mm rev -> RIGHT    OK                           did RIGHT    
+    Q 4mm rev -> U-TURN   OK                           did U-TURN   
+    box 10cm face at 25cm -> width 10, plan RIGHT, sidestep 27  ok
+RUN 17 new combos screw thr 0.49 spot 2.9mm wheels 0.99 start +4mm/-1.4deg -> PASS
+    L 6mm rev -> FORWARD  OK                           did FORWARD  
+    J 4mm rev -> LEFT     OK                           did LEFT     dark after end
+    G 5mm rev -> U-TURN   OK                           did U-TURN   dark after end
+    T 6mm rev -> RIGHT    OK                           did RIGHT    speck 0.8mm
+    box 10cm face at 29cm -> width 9, plan LEFT, sidestep 28  ok
+RUN 18 new combos screw thr 0.50 spot 2.8mm wheels 1.02 start -3mm/+1.7deg -> FAIL
+    L 4mm rev -> RIGHT    OK                           did RIGHT    
+    R 3mm     -> FORWARD  UNREADABLE (went straight)   did FORWARD  speck 1.0mm
+    B 3mm rev -> LEFT     OK                           did LEFT     
+    K 3mm     -> U-TURN   UNREADABLE (went straight)   did FORWARD  speck 2.0mm, dark after end
+    box 15cm face at 30cm -> width 18, plan LEFT, sidestep 31  OFF
+RUN 19 new combos screw thr 0.45 spot 3.0mm wheels 0.99 start +3mm/-0.4deg -> PASS
+    Y 6mm     -> U-TURN   OK                           did U-TURN   
+    A 5mm rev -> LEFT     OK                           did LEFT     
+    D 4mm rev -> RIGHT    OK                           did RIGHT    
+    O 6mm rev -> FORWARD  OK                           did FORWARD  
+    box 15cm face at 22cm -> width 14, plan LEFT, sidestep 30  ok
+RUN 20 new combos screw thr 0.54 spot 3.7mm wheels 0.97 start -1mm/-2.0deg -> PASS
+    V 4mm     -> RIGHT    OK                           did RIGHT    dark after end
+    G 6mm     -> FORWARD  OK                           did FORWARD  speck 1.8mm
+    Q 4mm rev -> U-TURN   OK                           did U-TURN   speck 1.0mm
+    B 5mm rev -> LEFT     OK                           did LEFT     
+    box 10cm face at 30cm -> width 10, plan LEFT, sidestep 28  ok
