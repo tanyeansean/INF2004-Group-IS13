@@ -21,7 +21,7 @@
 
 /* 1 = also publish each decoder result over MQTT (home test builds only). */
 #ifndef S3_BAR_DIAG_MQTT
-#define S3_BAR_DIAG_MQTT	0
+#define S3_BAR_DIAG_MQTT	1
 #endif
 #if S3_BAR_DIAG_MQTT
 #include "../subsystem1/comms.h"

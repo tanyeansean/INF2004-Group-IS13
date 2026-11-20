@@ -54,7 +54,7 @@
    requirement).  0 = only report it: for test drives that measure how
    close normal driving comes to the limits.  Change it here. */
 #ifndef S4_LIFT_STOPS
-#define S4_LIFT_STOPS		1
+#define S4_LIFT_STOPS		0
 #endif
 
 /* Lifted or overturned uses the fault bit, the message bit and the motion

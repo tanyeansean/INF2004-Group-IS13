@@ -1,0 +1,214 @@
+Dashboard log, 20 Nov 2026, 11:46-12:33 (firmware 09). Barcode passes, junctions, state changes, obstacle, hump, speed commands.
+
+11:56:59 map LEFT=F  RIGHT=Q  FORWARD=Z  UTURN=A
+12:01:33 state IDLE -> STOPPED
+12:02:41 state STOPPED -> LINE_FOLLOW
+12:03:08 barcode pass: F, 30 edges, widths 23 92 27 32 86 32 88 26 36 23 34 26 88 33 85 98 26 30 30 26 38 57 59 24 89 30 88 31 31
+12:03:08 barcode barcode F -> LEFT
+12:03:14 junction junction: LEFT for barcode F
+12:03:14 state LINE_FOLLOW -> TURNING
+12:03:15 state TURNING -> LINE_FOLLOW
+12:03:21 cmd SPEED 4
+12:03:55 cmd SPEED 7
+12:04:05 junction junction: FORWARD (no barcode asked for it)
+12:04:05 state LINE_FOLLOW -> TURNING
+12:04:07 state TURNING -> LINE_FOLLOW
+12:04:29 cmd SPEED 5
+12:05:15 cmd SPEED 10
+12:05:16 cmd SPEED 10
+12:05:27 cmd SPEED 8
+12:05:40 barcode pass: A, 30 edges, widths 20 65 22 23 63 26 63 26 19 26 62 27 18 25 20 70 18 27 61 25 18 68 21 23 66 20 130 1 5
+12:05:40 barcode barcode A -> UTURN
+12:05:47 junction junction: UTURN for barcode A
+12:05:47 state LINE_FOLLOW -> TURNING
+12:05:50 state TURNING -> LINE_FOLLOW
+12:06:03 barcode pass: Q, 30 edges, widths 41 33 85 34 84 33 25 96 25 34 85 95 87 30 28 31 27 32 28 33 25 34 82 36 86 32 27 90 28
+12:06:03 barcode barcode Q -> RIGHT
+12:06:47 state LINE_FOLLOW -> OBSTACLE_SCAN
+12:06:52 obstacle obstacle 18 cm at 90 deg, width 0 cm, clear L 3 cm / R out of range, plan RIGHT
+12:06:52 state OBSTACLE_SCAN -> AVOIDING
+12:07:00 state AVOIDING -> LINE_RECOVERY
+12:07:05 state LINE_RECOVERY -> AVOIDING
+12:07:05 state AVOIDING -> LINE_RECOVERY
+12:07:05 state LINE_RECOVERY -> LINE_FOLLOW
+12:07:09 state LINE_FOLLOW -> OBSTACLE_SCAN
+12:07:15 obstacle obstacle 20 cm at 90 deg, width 15 cm, clear L out of range / R out of range, plan RIGHT
+12:07:15 state OBSTACLE_SCAN -> AVOIDING
+12:07:25 state AVOIDING -> LINE_RECOVERY
+12:07:26 state LINE_RECOVERY -> AVOIDING
+12:07:28 state AVOIDING -> LINE_RECOVERY
+12:07:29 state LINE_RECOVERY -> LINE_FOLLOW
+12:08:08 cmd SPEED 10
+12:08:29 cmd SPEED 8
+12:09:04 barcode pass: F, 30 edges, widths 22 96 23 36 84 36 85 31 28 30 30 29 92 31 86 94 24 34 25 32 27 92 24 36 85 33 84 34 25
+12:09:04 barcode barcode F -> LEFT
+12:09:15 junction junction: LEFT for barcode F
+12:09:15 state LINE_FOLLOW -> TURNING
+12:09:17 state TURNING -> LINE_FOLLOW
+12:09:33 cmd SPEED 13
+12:09:43 cmd SPEED 8
+12:10:04 barcode pass: A, 30 edges, widths 17 70 19 26 61 29 61 30 15 29 60 28 16 27 17 71 16 27 61 28 15 72 16 27 62 24 63 23 19
+12:10:04 barcode barcode A -> UTURN
+12:10:15 junction junction: UTURN for barcode A
+12:10:15 state LINE_FOLLOW -> TURNING
+12:10:15 state TURNING -> LINE_FOLLOW
+12:10:27 barcode pass: Q, 30 edges, widths 40 33 87 35 83 37 23 97 24 34 83 97 85 34 24 35 24 35 25 34 24 34 83 36 84 35 25 95 25
+12:10:27 barcode barcode Q -> RIGHT
+12:11:21 junction junction: RIGHT for barcode Q
+12:11:21 state LINE_FOLLOW -> TURNING
+12:11:23 state TURNING -> LINE_FOLLOW
+12:11:43 barcode pass: unreadable, 30 edges, widths 23 36 85 35 82 37 23 37 22 94 83 40 101 58 22 6 8 41 43 41 47 98 23 35 83 37 83 33 26
+12:12:56 cmd SPEED 10
+12:12:56 cmd SPEED 10
+12:12:57 state LINE_FOLLOW -> OBSTACLE_SCAN
+12:12:58 cmd SPEED 10
+12:13:03 obstacle obstacle 19 cm at 90 deg, width 11 cm, clear L out of range / R 5 cm, plan LEFT
+12:13:03 state OBSTACLE_SCAN -> AVOIDING
+12:13:13 state AVOIDING -> LINE_RECOVERY
+12:13:15 state LINE_RECOVERY -> AVOIDING
+12:13:17 state AVOIDING -> LINE_RECOVERY
+12:13:18 state LINE_RECOVERY -> LINE_FOLLOW
+12:13:18 junction junction: FORWARD (no barcode asked for it)
+12:13:18 state LINE_FOLLOW -> TURNING
+12:13:20 state TURNING -> LINE_FOLLOW
+12:13:59 barcode pass: A, 30 edges, widths 16 71 17 27 60 28 60 26 15 30 60 27 16 28 17 74 15 29 60 30 13 73 15 28 62 23 66 20 24
+12:13:59 barcode barcode A -> UTURN
+12:14:03 junction junction: UTURN for barcode A
+12:14:03 state LINE_FOLLOW -> TURNING
+12:14:07 state TURNING -> LINE_FOLLOW
+12:14:14 barcode pass: Q, 30 edges, widths 37 36 85 36 82 35 25 95 24 35 82 99 87 33 26 33 25 34 24 36 22 37 84 35 85 35 25 93 22
+12:14:14 barcode barcode Q -> RIGHT
+12:14:48 junction junction: RIGHT for barcode Q
+12:14:48 state LINE_FOLLOW -> TURNING
+12:14:50 state TURNING -> LINE_FOLLOW
+12:15:00 barcode pass: Z, 30 edges, widths 23 93 23 36 82 36 85 35 24 36 24 96 80 37 107 40 23 37 28 37 26 104 19 40 78 35 85 35 26
+12:15:00 barcode barcode Z -> FORWARD
+12:15:44 state LINE_FOLLOW -> OBSTACLE_SCAN
+12:15:50 obstacle obstacle 19 cm at 90 deg, width 18 cm, clear L out of range / R 22 cm, plan LEFT
+12:15:51 state OBSTACLE_SCAN -> AVOIDING
+12:16:01 state AVOIDING -> LINE_RECOVERY
+12:16:03 state LINE_RECOVERY -> AVOIDING
+12:16:05 state AVOIDING -> LINE_RECOVERY
+12:16:05 state LINE_RECOVERY -> LINE_FOLLOW
+12:16:13 barcode pass: Q, 30 edges, widths 43 35 88 37 85 36 24 98 25 33 84 98 85 33 25 34 24 34 25 35 24 35 83 36 87 35 24 94 25
+12:16:13 barcode barcode Q -> RIGHT
+12:16:47 junction junction: RIGHT for barcode Q
+12:16:47 state LINE_FOLLOW -> TURNING
+12:16:49 state TURNING -> LINE_FOLLOW
+12:17:00 barcode pass: Z, 30 edges, widths 22 94 24 34 86 35 81 36 23 36 23 96 89 41 89 44 28 34 36 40 21 106 27 41 87 37 83 33 26
+12:17:00 barcode barcode Z -> FORWARD
+12:17:44 state LINE_FOLLOW -> OBSTACLE_SCAN
+12:17:50 obstacle obstacle 19 cm at 90 deg, width 14 cm, clear L out of range / R out of range, plan RIGHT
+12:17:50 state OBSTACLE_SCAN -> AVOIDING
+12:17:59 state AVOIDING -> LINE_RECOVERY
+12:18:01 state LINE_RECOVERY -> AVOIDING
+12:18:03 state AVOIDING -> LINE_RECOVERY
+12:18:03 state LINE_RECOVERY -> LINE_FOLLOW
+12:18:03 junction junction: FORWARD for barcode Z
+12:18:04 state LINE_FOLLOW -> TURNING
+12:18:06 state TURNING -> LINE_FOLLOW
+12:18:23 junction junction: FORWARD (no barcode asked for it)
+12:18:23 state LINE_FOLLOW -> TURNING
+12:18:24 state TURNING -> LINE_FOLLOW
+12:18:25 junction junction: FORWARD (no barcode asked for it)
+12:18:25 state LINE_FOLLOW -> TURNING
+12:18:26 state TURNING -> LINE_FOLLOW
+12:18:26 junction junction: FORWARD (no barcode asked for it)
+12:18:26 state LINE_FOLLOW -> TURNING
+12:18:27 state TURNING -> LINE_FOLLOW
+12:18:27 junction junction: FORWARD (no barcode asked for it)
+12:18:27 state LINE_FOLLOW -> TURNING
+12:18:29 state TURNING -> LINE_FOLLOW
+12:18:29 junction junction: FORWARD (no barcode asked for it)
+12:18:29 state LINE_FOLLOW -> TURNING
+12:18:30 state TURNING -> LINE_FOLLOW
+12:18:30 junction junction: FORWARD (no barcode asked for it)
+12:18:30 state LINE_FOLLOW -> TURNING
+12:18:31 state TURNING -> LINE_FOLLOW
+12:18:31 junction junction: FORWARD (no barcode asked for it)
+12:18:31 state LINE_FOLLOW -> TURNING
+12:18:33 state TURNING -> LINE_FOLLOW
+12:18:33 junction junction: FORWARD (no barcode asked for it)
+12:18:33 state LINE_FOLLOW -> TURNING
+12:18:34 state TURNING -> ERROR
+12:18:37 state ERROR -> STOPPED
+12:24:00 state IDLE -> LINE_FOLLOW
+12:24:08 barcode pass: Q, 30 edges, widths 41 32 88 34 83 35 24 96 26 32 85 94 87 34 26 34 25 34 27 33 25 34 85 36 83 35 26 93 26
+12:24:08 barcode barcode Q -> RIGHT
+12:24:39 junction junction: RIGHT for barcode Q
+12:24:39 state LINE_FOLLOW -> TURNING
+12:24:42 state TURNING -> LINE_FOLLOW
+12:24:51 barcode pass: Z, 30 edges, widths 24 92 25 32 87 32 86 34 26 34 23 97 88 36 94 35 30 33 27 36 25 101 27 38 76 34 86 30 31
+12:24:51 barcode barcode Z -> FORWARD
+12:25:22 hump hump 1.1 cm high at 595 cm
+12:25:32 state LINE_FOLLOW -> OBSTACLE_SCAN
+12:25:38 obstacle obstacle 19 cm at 90 deg, width 18 cm, clear L out of range / R out of range, plan RIGHT
+12:25:38 state OBSTACLE_SCAN -> AVOIDING
+12:25:48 state AVOIDING -> LINE_RECOVERY
+12:25:50 state LINE_RECOVERY -> AVOIDING
+12:25:52 state AVOIDING -> LINE_RECOVERY
+12:25:52 state LINE_RECOVERY -> LINE_FOLLOW
+12:25:53 junction junction: FORWARD for barcode Z
+12:25:53 state LINE_FOLLOW -> TURNING
+12:25:55 state TURNING -> LINE_FOLLOW
+12:26:31 barcode pass: A, 30 edges, widths 15 73 17 29 61 29 59 26 15 30 59 27 16 29 16 72 15 28 61 30 15 72 15 29 60 25 66 21 23
+12:26:31 barcode barcode A -> UTURN
+12:26:33 junction junction: UTURN for barcode A
+12:26:33 state LINE_FOLLOW -> TURNING
+12:26:36 state TURNING -> LINE_FOLLOW
+12:26:43 barcode pass: Q, 30 edges, widths 37 36 82 36 86 35 24 95 23 35 81 95 86 35 26 36 24 35 24 35 22 36 84 35 86 34 26 95 23
+12:26:43 barcode barcode Q -> RIGHT
+12:27:12 junction junction: RIGHT for barcode Q
+12:27:12 state LINE_FOLLOW -> TURNING
+12:27:14 state TURNING -> LINE_FOLLOW
+12:27:25 barcode pass: unreadable, 30 edges, widths 22 36 80 35 85 35 24 37 22 97 89 36 89 38 27 34 3 2 30 40 23 100 18 34 82 36 81 33 27
+12:27:51 hump hump 1.1 cm high at 1676 cm
+12:28:01 state LINE_FOLLOW -> OBSTACLE_SCAN
+12:28:08 obstacle obstacle 19 cm at 90 deg, width 18 cm, clear L out of range / R out of range, plan RIGHT
+12:28:08 state OBSTACLE_SCAN -> AVOIDING
+12:28:17 state AVOIDING -> LINE_RECOVERY
+12:28:20 state LINE_RECOVERY -> AVOIDING
+12:28:20 state AVOIDING -> LINE_RECOVERY
+12:28:22 state LINE_RECOVERY -> LINE_FOLLOW
+12:28:22 junction junction: FORWARD (no barcode asked for it)
+12:28:22 state LINE_FOLLOW -> TURNING
+12:28:24 state TURNING -> LINE_FOLLOW
+12:28:56 barcode pass: A, 30 edges, widths 16 73 17 27 59 28 60 30 15 29 60 28 16 27 18 71 16 27 59 29 14 72 14 29 62 25 64 24 19
+12:28:56 barcode barcode A -> UTURN
+12:29:01 junction junction: UTURN for barcode A
+12:29:01 state LINE_FOLLOW -> TURNING
+12:29:03 state TURNING -> LINE_FOLLOW
+12:29:10 barcode pass: Q, 30 edges, widths 38 36 86 35 84 35 23 98 23 36 82 95 85 34 24 35 23 36 24 36 24 35 85 34 85 35 24 95 23
+12:29:10 barcode barcode Q -> RIGHT
+12:29:39 junction junction: RIGHT for barcode Q
+12:29:39 state LINE_FOLLOW -> TURNING
+12:29:43 state TURNING -> LINE_FOLLOW
+12:29:52 barcode pass: Z, 30 edges, widths 23 94 22 36 83 36 83 33 24 36 23 97 84 41 91 35 26 38 28 28 28 104 23 40 82 34 83 33 27
+12:29:52 barcode barcode Z -> FORWARD
+12:30:19 hump hump 1.1 cm high at 2759 cm
+12:30:28 state LINE_FOLLOW -> OBSTACLE_SCAN
+12:30:34 obstacle obstacle 19 cm at 90 deg, width 18 cm, clear L out of range / R out of range, plan RIGHT
+12:30:35 state OBSTACLE_SCAN -> AVOIDING
+12:30:44 state AVOIDING -> LINE_RECOVERY
+12:30:50 state LINE_RECOVERY -> AVOIDING
+12:30:51 state AVOIDING -> LINE_RECOVERY
+12:30:51 state LINE_RECOVERY -> LINE_FOLLOW
+12:30:51 junction junction: FORWARD for barcode Z
+12:30:51 state LINE_FOLLOW -> TURNING
+12:30:52 state TURNING -> LINE_FOLLOW
+12:31:02 junction junction: FORWARD (no barcode asked for it)
+12:31:02 state LINE_FOLLOW -> TURNING
+12:31:03 state TURNING -> OBSTACLE_SCAN
+12:31:10 obstacle obstacle 10 cm at 90 deg, width 0 cm, clear L 0 cm / R 3 cm, plan REVERSE
+12:31:17 obstacle obstacle 21 cm at 90 deg, width 2 cm, clear L 6 cm / R out of range, plan RIGHT
+12:31:17 state OBSTACLE_SCAN -> AVOIDING
+12:31:21 state AVOIDING -> STOPPED
+12:31:33 obstacle obstacle 17 cm at 90 deg, width 5 cm, clear L out of range / R 4 cm, plan LEFT
+12:31:41 obstacle obstacle 17 cm at 90 deg, width 13 cm, clear L out of range / R out of range, plan LEFT
+12:31:48 obstacle obstacle 17 cm at 90 deg, width 11 cm, clear L 4 cm / R out of range, plan RIGHT
+12:31:56 obstacle obstacle 20 cm at 90 deg, width 18 cm, clear L out of range / R out of range, plan LEFT
+12:32:02 obstacle obstacle 15 cm at 90 deg, width 14 cm, clear L out of range / R out of range, plan LEFT
+12:32:09 obstacle obstacle 15 cm at 90 deg, width 15 cm, clear L out of range / R out of range, plan LEFT
+12:32:17 obstacle obstacle 15 cm at 90 deg, width 8 cm, clear L 4 cm / R out of range, plan RIGHT
+12:32:23 obstacle obstacle 18 cm at 90 deg, width 9 cm, clear L 4 cm / R out of range, plan RIGHT
+12:32:30 obstacle obstacle 20 cm at 90 deg, width 29 cm, clear L out of range / R 0 cm, plan LEFT
