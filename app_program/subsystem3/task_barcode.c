@@ -36,7 +36,7 @@ LOCAL UW	s3_barcode_dropped = 0U;	/* barcode_q full */
  * that moved GP7 at all becomes visible - including the ones that produced
  * no result.  One line per pass, printed when the burst goes quiet.
  */
-#define S3_BAR_PASS_QUIET_US	150000U	/* == BARCODE_ABORT_FLOOR_US */
+#define S3_BAR_PASS_QUIET_US	600000U	/* == BARCODE_ABORT_FLOOR_US */
 /* ...but the decoder's own abort timeout grows with the longest element it
  * has seen (up to 2 s), so a trickle of edges 200-400 ms apart keeps one
  * frame open forever.  Report anyway once queued edges have been silent

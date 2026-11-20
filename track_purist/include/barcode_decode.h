@@ -76,7 +76,7 @@ extern "C" {
  * The abort is only a safety net: a frame is decoded on its 30th edge.
  */
 #define BARCODE_ABORT_FACTOR     6u
-#define BARCODE_ABORT_FLOOR_US   150000u
+#define BARCODE_ABORT_FLOOR_US   600000u
 #define BARCODE_ABORT_CAP_US     2000000u
 
 /*

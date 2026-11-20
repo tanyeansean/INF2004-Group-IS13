@@ -351,17 +351,20 @@ LOCAL BOOL jn_reverse_follow(W prog_l, W prog_r)
 #if STEER_INVERT
 	steer = -steer;
 #endif
-	if (!g_lb && !g_rb) {
-		if (g_jn_rev_white_ms == 0U) {
-			g_jn_rev_white_ms = t | 1U;
-		} else if ((t - g_jn_rev_white_ms) >= JN_REV_LOST_MS) {
-			return FALSE;		/* line lost */
-		} else {
-			/* briefly white: carry on */
-		}
-	} else {
-		g_jn_rev_white_ms = 0U;
-	}
+	/* 20 Nov (Aurelius, lab log 10:06, 10:13, 09:43, 09:54): both sensors
+	   white is NOT "line lost" on this car. The front sensors sit either
+	   side of the line (about 27 mm apart, line 18 mm), so both read white
+	   whenever the car is centred: forward following shows line=000 nearly
+	   all the time. The old rule (both white for JN_REV_LOST_MS = lost)
+	   therefore stopped every rescan about half a second after it began,
+	   as "[jn] move FAILED: line lost while reversing" = ROBOT_ERROR.
+	   The reverse is already bounded by distance (JN_RESCAN_MAX_MM), by
+	   the stall check and by the move cap, and the wheels are held
+	   straight on the encoders, so there is nothing to give up on here.
+	   If the car does end the reverse off the line, forward following
+	   and its own line recovery take over, as after any other move. */
+	(void)t;
+	g_jn_rev_white_ms = 0U;
 	/* Reversing, both wheels run backwards. Turning left (CCW) while
 	   reversing = the right wheel goes back slower than the left. The
 	   hold slows whichever wheel is ahead, as in jn_hold_straight(). */
